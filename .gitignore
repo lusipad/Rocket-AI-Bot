@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+data/logs/
+data/memory/processed-msg.json
+.env
+*.log
+*.tsbuildinfo
+*.local.yaml
+web-admin/node_modules/
+web-admin/dist/

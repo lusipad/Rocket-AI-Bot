@@ -1,0 +1,48 @@
+# RocketBot 配置
+rocketchat:
+  host: "${RC_HOST}"
+  useSsl: ${RC_USE_SSL}
+  username: "${RC_USERNAME}"
+  password: "${RC_PASSWORD}"
+  botUsername: "RocketBot"
+
+llm:
+  endpoint: "${LLM_ENDPOINT}"
+  apiKey: "${LLM_API_KEY}"
+  model: "${LLM_MODEL}"
+  apiMode: "responses"
+  contextWindow: 128000
+  nativeWebSearch:
+    enabled: true
+    instruction: "涉及公开互联网最新信息时，优先联网后再回答。"
+    tools:
+      - type: "web_search"
+    requestBody:
+      tool_choice: "auto"
+  extraBody: {}
+
+azureDevOps:
+  serverUrl: "${AZURE_DEVOPS_URL}"
+  pat: "${AZURE_DEVOPS_PAT}"
+  project: "${AZURE_DEVOPS_PROJECT}"
+
+repos:
+  - path: "D:/Repos"
+    name: "all"
+    autoPull: false
+    pullInterval: 3600
+
+codex:
+  path: ""
+  workingDir: "D:/Repos"
+  maxConcurrency: 1
+  queueMaxSize: 3
+
+scheduler:
+  persistencePath: "data/scheduler/tasks.json"
+  tasks: []
+
+web:
+  port: ${WEB_PORT}
+  secret: "${WEB_SECRET}"
+  sessionExpiry: "24h"
