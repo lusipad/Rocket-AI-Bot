@@ -14,12 +14,15 @@ import { createRepoSearchTool } from './tools/repo-search.js';
 import { createReadFileTool } from './tools/read-file.js';
 import { createCodexTool } from './tools/codex.js';
 import { createAzureDevOpsTool } from './tools/azure-devops.js';
+import { createRoomHistoryTool } from './tools/room-history.js';
 import { TaskPersistence, type TaskDef } from './scheduler/persistence.js';
 import { Scheduler } from './scheduler/index.js';
 import { createWebServer } from './web/server.js';
 import type { BotMessage } from './bot/message-handler.js';
 
-const CONTEXT_MESSAGE_COUNT = 12;
+const DEFAULT_DISCUSSION_CONTEXT_COUNT = 40;
+const EXTENDED_DISCUSSION_CONTEXT_COUNT = 80;
+const EXTENDED_DISCUSSION_PATTERN = /(总结|汇总|回顾|梳理|归纳|结论|分歧|待办|继续|上面|刚才|前面)/;
 
 async function main() {
   const config = loadConfig();
@@ -58,10 +61,6 @@ async function main() {
     logger.info('Azure DevOps 工具已注册');
   }
 
-  // --- LLM + Orchestrator ---
-  const llm = new LLMClient(config, logger);
-  const orchestrator = new Orchestrator(llm, registry, config, logger);
-
   // --- Rocket.Chat ---
   const deduplicator = new MessageDeduplicator(1000, 'data/memory');
   const bot = new RocketChatClient(config, logger);
@@ -70,6 +69,11 @@ async function main() {
     config.rateLimit.channelCooldownMs,
     config.rateLimit.userMaxPerMinute,
   );
+  registry.register(createRoomHistoryTool(bot));
+
+  // --- LLM + Orchestrator ---
+  const llm = new LLMClient(config, logger);
+  const orchestrator = new Orchestrator(llm, registry, config, logger);
 
   router.on('mention', async (msg: BotMessage) => {
     const channelWait = limiter.checkChannel(msg.roomId);
@@ -95,13 +99,18 @@ async function main() {
     try {
       bot.sendToRoomId('正在思考...', msg.roomId).catch(() => {});
 
+      const contextCount = shouldUseExtendedDiscussionContext(msg.text)
+        ? EXTENDED_DISCUSSION_CONTEXT_COUNT
+        : DEFAULT_DISCUSSION_CONTEXT_COUNT;
       const recentMessages = await bot.getRecentMessages(
         msg.roomId,
         msg.roomType,
-        CONTEXT_MESSAGE_COUNT,
-        msg.id,
-        msg.userId,
-        msg.timestamp,
+        {
+          count: contextCount,
+          excludeMessageId: msg.id,
+          currentTimestamp: msg.timestamp,
+          threadId: msg.threadId,
+        },
       );
       const currentImages = await bot.resolveImageUrls(msg.images.map((image) => image.url));
       const reply = await orchestrator.handle(
@@ -110,6 +119,13 @@ async function main() {
         msg.text,
         recentMessages,
         currentImages,
+        {
+          roomId: msg.roomId,
+          roomType: msg.roomType,
+          threadId: msg.threadId,
+          triggerMessageId: msg.id,
+          timestamp: msg.timestamp,
+        },
       );
       const parts = splitMessage(reply);
       for (const part of parts) {
@@ -132,7 +148,8 @@ async function main() {
   const scheduler = new Scheduler(persistence, async (task: TaskDef) => {
     // 定时任务执行器：可以通过 LLM 处理
     try {
-      const reply = await orchestrator.handle('scheduler', '系统', `执行定时任务: ${task.name}`, []);
+      const instruction = task.prompt?.trim() || task.name;
+      const reply = await orchestrator.handle('scheduler', '系统', `执行定时任务: ${instruction}`, []);
       await bot.sendToRoomId(reply, task.room);
       return { success: true, output: reply.slice(0, 500) };
     } catch (err) {
@@ -187,3 +204,7 @@ main().catch((err) => {
   console.error('启动失败:', err);
   process.exit(1);
 });
+
+function shouldUseExtendedDiscussionContext(text: string): boolean {
+  return EXTENDED_DISCUSSION_PATTERN.test(text);
+}

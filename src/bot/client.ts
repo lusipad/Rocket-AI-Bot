@@ -8,6 +8,7 @@ import type { Config } from '../config/schema.js';
 export interface IMessage {
   _id?: string;
   rid?: string;
+  tmid?: string;
   msg?: string;
   attachments?: Array<{ image_url?: string }>;
   u?: { _id: string; username: string; name?: string };
@@ -29,8 +30,45 @@ export interface ConversationMessage {
   images: string[];
 }
 
-const CONTEXT_GAP_MS = 10 * 60 * 1000;
-const FOCUS_CONTEXT_WINDOW_MS = 5 * 60 * 1000;
+export interface DiscussionHistoryMessage {
+  id: string;
+  threadId?: string;
+  role: 'user' | 'assistant';
+  username: string;
+  text: string;
+  imageCount: number;
+  timestamp: string;
+}
+
+export interface DiscussionHistoryPage {
+  messages: DiscussionHistoryMessage[];
+  hasMore: boolean;
+  nextBeforeMessageId?: string;
+}
+
+const DEFAULT_DISCUSSION_LOOKBACK_MS = 45 * 60 * 1000;
+const EXTENDED_DISCUSSION_LOOKBACK_MS = 3 * 60 * 60 * 1000;
+const DEFAULT_DISCUSSION_SOFT_GAP_MS = 15 * 60 * 1000;
+const EXTENDED_DISCUSSION_SOFT_GAP_MS = 30 * 60 * 1000;
+const DEFAULT_DISCUSSION_HARD_GAP_MS = 45 * 60 * 1000;
+const EXTENDED_DISCUSSION_HARD_GAP_MS = 2 * 60 * 60 * 1000;
+const DISCUSSION_FETCH_BUFFER = 20;
+const MAX_DISCUSSION_FETCH_COUNT = 120;
+
+export interface RecentMessageOptions {
+  count?: number;
+  excludeMessageId?: string;
+  currentTimestamp?: Date;
+  threadId?: string;
+}
+
+export interface DiscussionHistoryPageOptions {
+  beforeMessageId?: string;
+  limit?: number;
+  currentTimestamp?: Date;
+  threadId?: string;
+  useExtendedWindow?: boolean;
+}
 
 export class RocketChatClient {
   private config: Config;
@@ -137,62 +175,126 @@ export class RocketChatClient {
   async getRecentMessages(
     roomId: string,
     roomType?: IMessageMeta['roomType'],
-    count = 12,
-    excludeMessageId?: string,
-    focusUserId?: string,
-    currentTimestamp?: Date,
+    options: RecentMessageOptions = {},
   ): Promise<ConversationMessage[]> {
-    const endpoints = this.getHistoryEndpoints(roomType);
-    let data: Record<string, unknown> | null = null;
-    for (const endpoint of endpoints) {
-      try {
-        data = await this.apiGet(endpoint, { roomId, count: Math.max(count + 5, count) });
-        break;
-      } catch {
-        continue;
+    const count = Math.max(1, options.count ?? 12);
+    const fetchCount = Math.min(count + DISCUSSION_FETCH_BUFFER, MAX_DISCUSSION_FETCH_COUNT);
+    const useExtendedWindow = count > 40;
+    const history = await this.fetchHistoryMessages(roomId, roomType, fetchCount);
+
+    let candidates = this.buildHistoryCandidates(history, options.excludeMessageId);
+    candidates = this.filterThreadCandidates(candidates, options.threadId);
+
+    const selected = this.sliceDiscussionCandidates(
+      candidates,
+      count,
+      options.currentTimestamp,
+      useExtendedWindow,
+    );
+
+    return this.toConversationMessages(selected);
+  }
+
+  async getDiscussionHistoryPage(
+    roomId: string,
+    roomType?: IMessageMeta['roomType'],
+    options: DiscussionHistoryPageOptions = {},
+  ): Promise<DiscussionHistoryPage> {
+    const limit = Math.max(1, Math.min(options.limit ?? 20, 30));
+    const fetchCount = Math.min(
+      Math.max(limit + DISCUSSION_FETCH_BUFFER + 1, 80),
+      MAX_DISCUSSION_FETCH_COUNT,
+    );
+    const history = await this.fetchHistoryMessages(roomId, roomType, fetchCount);
+    let candidates = this.buildHistoryCandidates(history);
+    candidates = this.filterThreadCandidates(candidates, options.threadId);
+
+    let anchorTimestamp = options.currentTimestamp;
+    let olderCandidates = candidates;
+    if (options.beforeMessageId) {
+      const anchorIndex = candidates.findIndex((message) => message._id === options.beforeMessageId);
+      if (anchorIndex !== -1) {
+        const timestamp = this.getMessageTimestamp(candidates[anchorIndex]);
+        if (timestamp !== null) {
+          anchorTimestamp = new Date(timestamp);
+        }
+        olderCandidates = candidates.slice(anchorIndex + 1);
       }
     }
-    if (!data) return [];
 
-    const history = Array.isArray(data?.messages) ? data.messages as IMessage[] : [];
+    const selected = this.sliceDiscussionCandidates(
+      olderCandidates,
+      limit,
+      anchorTimestamp,
+      options.useExtendedWindow ?? true,
+    );
+    const oldestReturned = selected[selected.length - 1];
 
-    let candidates = history
-      .filter((message) => message._id !== excludeMessageId)
-      .filter((message) => (message.msg?.trim() ?? '') || this.extractImageUrls(message).length > 0)
-      .filter((message) => !(message.u?._id === this.userId && message.msg?.trim() === '正在思考...'));
+    return {
+      messages: this.toDiscussionHistoryMessages(selected),
+      hasMore: olderCandidates.length > selected.length,
+      nextBeforeMessageId: oldestReturned?._id,
+    };
+  }
 
-    if (focusUserId && currentTimestamp) {
-      const currentMs = currentTimestamp.getTime();
-      const focusIndex = candidates.findIndex((message) => {
-        if (message.u?._id !== focusUserId) return false;
-        const timestamp = this.getMessageTimestamp(message);
-        if (timestamp === null) return false;
-        return currentMs - timestamp <= FOCUS_CONTEXT_WINDOW_MS;
-      });
+  private sliceDiscussionCandidates(
+    candidates: IMessage[],
+    count: number,
+    currentTimestamp?: Date,
+    useExtendedWindow = false,
+  ): IMessage[] {
+    if (candidates.length === 0) return [];
 
-      if (focusIndex !== -1) {
-        candidates = candidates.slice(0, focusIndex + 1);
-      }
-    }
+    const anchorTimestamp = currentTimestamp?.getTime()
+      ?? this.getMessageTimestamp(candidates[0])
+      ?? Date.now();
+    const maxLookbackMs = useExtendedWindow
+      ? EXTENDED_DISCUSSION_LOOKBACK_MS
+      : DEFAULT_DISCUSSION_LOOKBACK_MS;
+    const softGapMs = useExtendedWindow
+      ? EXTENDED_DISCUSSION_SOFT_GAP_MS
+      : DEFAULT_DISCUSSION_SOFT_GAP_MS;
+    const hardGapMs = useExtendedWindow
+      ? EXTENDED_DISCUSSION_HARD_GAP_MS
+      : DEFAULT_DISCUSSION_HARD_GAP_MS;
+    const minMessagesBeforeSoftGapStop = Math.min(
+      count,
+      useExtendedWindow ? 12 : Math.max(3, Math.ceil(count / 2)),
+    );
 
     const selected: IMessage[] = [];
-    let lastTimestamp: number | null = null;
+    let previousTimestamp = anchorTimestamp;
+
     for (const message of candidates) {
       if (selected.length >= count) break;
 
       const timestamp = this.getMessageTimestamp(message);
-      if (lastTimestamp !== null && timestamp !== null && lastTimestamp - timestamp > CONTEXT_GAP_MS) {
-        break;
+      if (timestamp !== null) {
+        if (anchorTimestamp - timestamp > maxLookbackMs) {
+          break;
+        }
+
+        const gapMs = previousTimestamp - timestamp;
+        if (selected.length > 0 && gapMs > hardGapMs) {
+          break;
+        }
+
+        if (selected.length >= minMessagesBeforeSoftGapStop && gapMs > softGapMs) {
+          break;
+        }
+
+        previousTimestamp = timestamp;
       }
 
       selected.push(message);
-      if (timestamp !== null) {
-        lastTimestamp = timestamp;
-      }
     }
 
+    return selected;
+  }
+
+  private async toConversationMessages(candidates: IMessage[]): Promise<ConversationMessage[]> {
     const messages: ConversationMessage[] = [];
-    for (const message of selected.reverse()) {
+    for (const message of [...candidates].reverse()) {
       messages.push({
         role: message.u?._id === this.userId ? 'assistant' : 'user',
         username: message.u?.username ?? 'unknown',
@@ -202,6 +304,36 @@ export class RocketChatClient {
     }
 
     return messages;
+  }
+
+  private toDiscussionHistoryMessages(candidates: IMessage[]): DiscussionHistoryMessage[] {
+    return [...candidates].reverse().map((message) => ({
+      id: message._id ?? '',
+      threadId: message.tmid,
+      role: message.u?._id === this.userId ? 'assistant' : 'user',
+      username: message.u?.username ?? 'unknown',
+      text: message.msg?.trim() ?? '',
+      imageCount: this.extractImageUrls(message).length,
+      timestamp: this.toIsoTimestamp(message),
+    }));
+  }
+
+  private buildHistoryCandidates(history: IMessage[], excludeMessageId?: string): IMessage[] {
+    return history
+      .filter((message) => message._id !== excludeMessageId)
+      .filter((message) => (message.msg?.trim() ?? '') || this.extractImageUrls(message).length > 0)
+      .filter((message) => !(message.u?._id === this.userId && message.msg?.trim() === '正在思考...'));
+  }
+
+  private filterThreadCandidates(candidates: IMessage[], threadId?: string): IMessage[] {
+    if (!threadId) {
+      return candidates;
+    }
+
+    const threadMessages = candidates.filter((message) =>
+      message._id === threadId || message.tmid === threadId,
+    );
+    return threadMessages.length > 0 ? threadMessages : candidates;
   }
 
   async resolveImageUrls(urls: string[]): Promise<string[]> {
@@ -243,6 +375,24 @@ export class RocketChatClient {
       'X-Auth-Token': this.authToken,
       'X-User-Id': this.userId,
     };
+  }
+
+  private async fetchHistoryMessages(
+    roomId: string,
+    roomType: IMessageMeta['roomType'] | undefined,
+    count: number,
+  ): Promise<IMessage[]> {
+    const endpoints = this.getHistoryEndpoints(roomType);
+    for (const endpoint of endpoints) {
+      try {
+        const data = await this.apiGet(endpoint, { roomId, count });
+        return Array.isArray(data?.messages) ? data.messages as IMessage[] : [];
+      } catch {
+        continue;
+      }
+    }
+
+    return [];
   }
 
   private async apiGet(endpoint: string, params: Record<string, string | number>): Promise<Record<string, unknown>> {
@@ -290,6 +440,11 @@ export class RocketChatClient {
     }
 
     return new Date(message.ts.$date).getTime();
+  }
+
+  private toIsoTimestamp(message: IMessage): string {
+    const timestamp = this.getMessageTimestamp(message);
+    return timestamp === null ? new Date(0).toISOString() : new Date(timestamp).toISOString();
   }
 
   private async resolveImageUrl(url: string): Promise<string | null> {

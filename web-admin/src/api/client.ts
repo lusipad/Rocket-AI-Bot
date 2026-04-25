@@ -2,6 +2,14 @@ const BASE = '/api';
 
 let token: string | null = null;
 
+export interface Task {
+  name: string;
+  prompt: string;
+  cron: string;
+  room: string;
+  enabled: boolean;
+}
+
 export function setToken(t: string | null) { token = t; }
 export function getToken(): string | null { return token; }
 
@@ -21,15 +29,15 @@ export async function getStatus(): Promise<any> {
   return request('/status');
 }
 
-export async function getTasks(): Promise<any[]> {
+export async function getTasks(): Promise<Task[]> {
   return request('/tasks');
 }
 
-export async function createTask(task: { name: string; cron: string; room: string; enabled: boolean }): Promise<void> {
+export async function createTask(task: Task): Promise<void> {
   return request('/tasks', { method: 'POST', body: JSON.stringify(task) });
 }
 
-export async function updateTask(name: string, task: Partial<{ cron: string; room: string; enabled: boolean }>): Promise<void> {
+export async function updateTask(name: string, task: Partial<Pick<Task, 'prompt' | 'cron' | 'room' | 'enabled'>>): Promise<void> {
   return request(`/tasks/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(task) });
 }
 

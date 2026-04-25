@@ -4,6 +4,7 @@ import { ensureDir } from '../utils/helpers.js';
 
 export interface TaskDef {
   name: string;
+  prompt?: string;
   cron: string;
   room: string;
   enabled: boolean;
@@ -31,14 +32,15 @@ export class TaskPersistence {
   loadTasks(): TaskDef[] {
     try {
       const raw = fs.readFileSync(this.tasksPath, 'utf-8');
-      return JSON.parse(raw) as TaskDef[];
+      const tasks = JSON.parse(raw) as TaskDef[];
+      return tasks.map(normalizeTask);
     } catch {
       return [];
     }
   }
 
   saveTasks(tasks: TaskDef[]): void {
-    fs.writeFileSync(this.tasksPath, JSON.stringify(tasks, null, 2), 'utf-8');
+    fs.writeFileSync(this.tasksPath, JSON.stringify(tasks.map(normalizeTask), null, 2), 'utf-8');
   }
 
   recordHistory(taskName: string, success: boolean, output?: string, error?: string): void {
@@ -71,4 +73,12 @@ export class TaskPersistence {
     }
     return results;
   }
+}
+
+function normalizeTask(task: TaskDef): TaskDef {
+  const prompt = task.prompt?.trim();
+  return {
+    ...task,
+    prompt: prompt || task.name,
+  };
 }

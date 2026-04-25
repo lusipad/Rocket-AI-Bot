@@ -30,6 +30,7 @@ const repoConfigSchema = z.object({
 
 const schedulerTaskSchema = z.object({
   name: z.string(),
+  prompt: z.string().optional(),
   cron: z.string(),
   room: z.string(),
   enabled: z.boolean().default(true),

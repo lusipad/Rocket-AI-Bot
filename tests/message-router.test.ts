@@ -105,6 +105,7 @@ test('mention 消息应携带图片附件信息', async () => {
     null,
     {
       _id: 'msg-3',
+      tmid: 'thread-1',
       msg: '@RocketBot 看下这张图',
       rid: 'room-1',
       attachments: [
@@ -123,4 +124,6 @@ test('mention 消息应携带图片附件信息', async () => {
   assert.deepEqual(received?.images, [
     { url: 'https://example.com/cat.png' },
   ]);
+  assert.equal(received?.threadId, 'thread-1');
+  assert.equal(received?.triggerMessageId, 'msg-3');
 });

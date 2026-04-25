@@ -6,6 +6,7 @@ import { ToolRegistry } from '../tools/registry.js';
 import { sanitizeError } from '../utils/helpers.js';
 import type { Logger } from '../utils/logger.js';
 import type { Config } from '../config/schema.js';
+import type { RequestContext } from '../bot/message-handler.js';
 
 const MAX_TOOL_ROUNDS = 5;   // 最多 tool call 循环轮次
 const MAX_REPLY_LEN = 4000;  // 单条消息最大字符数
@@ -43,6 +44,7 @@ ${nativeWebSearchRules}${extraInstruction}
 ## 可用工具
 - search_code: 在本地仓库搜索代码（关键词或正则）
 - read_file: 读取仓库中的指定文件，通常先 search_code 再 read_file
+- room_history: 在当前 Rocket.Chat 房间或当前线程中补充读取更早的讨论消息
 - exec_codex: 调用 Codex CLI 执行复杂编程任务（代码生成、重构、测试等）
 - azure_devops: 查询 Azure DevOps 工作项/PR/构建状态
 
@@ -85,9 +87,16 @@ export class Orchestrator {
     message: string,
     recentMessages: ConversationMessage[],
     currentImages: string[] = [],
+    requestContext?: RequestContext,
   ): Promise<string> {
     const requestId = crypto.randomUUID();
-    this.logger.info('开始处理请求', { requestId, username });
+    this.logger.info('开始处理请求', {
+      requestId,
+      username,
+      roomId: requestContext?.roomId,
+      threadId: requestContext?.threadId,
+      triggerMessageId: requestContext?.triggerMessageId,
+    });
 
     try {
       const context = new ContextBuilder(this.config, buildSystemPrompt(this.config));
@@ -129,7 +138,9 @@ export class Orchestrator {
 
             this.logger.info('LLM 调用工具', { requestId, round, tool: toolName, params });
 
-            const result = await this.registry.execute(toolName, params);
+            const result = await this.registry.execute(toolName, params, {
+              request: requestContext,
+            });
 
             context.add(
               'tool',

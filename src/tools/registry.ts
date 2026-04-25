@@ -2,17 +2,26 @@ import crypto from 'node:crypto';
 import type { Logger } from '../utils/logger.js';
 import type { ToolDef } from '../llm/client.js';
 import { sanitizeError } from '../utils/helpers.js';
+import type { RequestContext } from '../bot/message-handler.js';
 
 export interface ToolResult {
   success: boolean;
   data: Record<string, unknown>;
 }
 
+export interface ToolExecutionContext {
+  request?: RequestContext;
+}
+
 export interface Tool {
   /** LLM 看到的工具定义 */
   definition: ToolDef;
   /** 执行工具 */
-  execute(params: Record<string, unknown>, logger: Logger): Promise<ToolResult>;
+  execute(
+    params: Record<string, unknown>,
+    logger: Logger,
+    context: ToolExecutionContext,
+  ): Promise<ToolResult>;
   /** 超时时间(ms) */
   timeout: number;
 }
@@ -39,17 +48,28 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
-  async execute(name: string, params: Record<string, unknown>): Promise<ToolResult> {
+  async execute(
+    name: string,
+    params: Record<string, unknown>,
+    context: ToolExecutionContext = {},
+  ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
       return { success: false, data: { error: `未知工具: ${name}` } };
     }
 
     const requestId = crypto.randomUUID();
-    this.logger.info('执行工具', { requestId, tool: name, params });
+    this.logger.info('执行工具', {
+      requestId,
+      tool: name,
+      params,
+      roomId: context.request?.roomId,
+      threadId: context.request?.threadId,
+      triggerMessageId: context.request?.triggerMessageId,
+    });
 
     try {
-      const result = await withTimeout(tool.execute(params, this.logger), tool.timeout);
+      const result = await withTimeout(tool.execute(params, this.logger, context), tool.timeout);
       result.data.requestId = requestId;
       return result;
     } catch (err) {

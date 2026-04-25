@@ -24,11 +24,17 @@ export function createTaskRoutes(scheduler: Scheduler, logger: Logger): Router {
   // POST /api/tasks
   router.post('/', (req, res) => {
     try {
-      const { name, cron: cronExpr, room, enabled } = req.body;
+      const { name, prompt, cron: cronExpr, room, enabled } = req.body;
       if (!name || !cronExpr) {
         return res.status(400).json({ error: 'name 和 cron 必填' });
       }
-      scheduler.addTask({ name, cron: cronExpr, room: room ?? 'general', enabled: enabled ?? true });
+      scheduler.addTask({
+        name,
+        prompt: typeof prompt === 'string' && prompt.trim() ? prompt.trim() : name,
+        cron: cronExpr,
+        room: room ?? 'general',
+        enabled: enabled ?? true,
+      });
       logger.info('任务已创建', { name });
       res.status(201).json({ ok: true });
     } catch (err) {
@@ -39,10 +45,13 @@ export function createTaskRoutes(scheduler: Scheduler, logger: Logger): Router {
   // PUT /api/tasks/:name
   router.put('/:name', (req, res) => {
     const { name } = req.params;
-    const { cron: cronExpr, room, enabled } = req.body;
+    const { prompt, cron: cronExpr, room, enabled } = req.body;
     const existing = scheduler.listTasks().find(task => task.name === name);
     const nextTask = {
       name,
+      prompt: typeof prompt === 'string'
+        ? (prompt.trim() || existing?.prompt || name)
+        : (existing?.prompt ?? name),
       cron: cronExpr ?? existing?.cron,
       room: room ?? existing?.room ?? 'general',
       enabled: enabled ?? existing?.enabled ?? true,

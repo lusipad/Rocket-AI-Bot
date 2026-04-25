@@ -7,14 +7,20 @@ export interface BotMessageImage {
   url: string;
 }
 
-export interface BotMessage {
+export interface RequestContext {
+  roomId: string;
+  roomType?: IMessageMeta['roomType'];
+  threadId?: string;
+  triggerMessageId: string;
+  timestamp: Date;
+}
+
+export interface BotMessage extends RequestContext {
   id: string;
   text: string;
   userId: string;
   username: string;
-  roomId: string;
   roomName: string;
-  roomType?: IMessageMeta['roomType'];
   timestamp: Date;
   images: BotMessageImage[];
 }
@@ -68,6 +74,8 @@ export class MessageRouter {
       roomId: raw.rid ?? '',
       roomName: meta.roomName ?? '',
       roomType: meta.roomType,
+      threadId: raw.tmid,
+      triggerMessageId: msgId,
       timestamp: raw.ts
         ? new Date(typeof raw.ts === 'string' ? raw.ts : raw.ts.$date)
         : new Date(),
