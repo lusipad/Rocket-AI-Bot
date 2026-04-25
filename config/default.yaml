@@ -27,14 +27,14 @@ azureDevOps:
   project: "${AZURE_DEVOPS_PROJECT}"
 
 repos:
-  - path: "D:/Repos"
+  - path: "."
     name: "all"
     autoPull: false
     pullInterval: 3600
 
 codex:
   path: ""
-  workingDir: "D:/Repos"
+  workingDir: "."
   maxConcurrency: 1
   queueMaxSize: 3
 
