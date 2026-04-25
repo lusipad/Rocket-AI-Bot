@@ -70,6 +70,8 @@ export interface DiscussionHistoryPageOptions {
   useExtendedWindow?: boolean;
 }
 
+export type PresenceStatus = 'online' | 'busy' | 'away' | 'offline';
+
 export class RocketChatClient {
   private config: Config;
   private logger: Logger;
@@ -81,6 +83,8 @@ export class RocketChatClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private shutdownFlag = false;
   private attemptCount = 0;
+  private roomMetaCache = new Map<string, IMessageMeta>();
+  private lastPresence: { status: PresenceStatus; message: string } | null = null;
 
   constructor(config: Config, logger: Logger) {
     this.config = config;
@@ -352,10 +356,25 @@ export class RocketChatClient {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.connected) {
       try {
+        await this.setPresence('offline', 'AI 已离线');
         await this.bot.disconnect();
       } catch { /* ignore */ }
       this.connected = false;
     }
+  }
+
+  async syncAvailability(llmState: string): Promise<void> {
+    if (!this.connected) {
+      await this.setPresence('offline', 'AI 已离线');
+      return;
+    }
+
+    if (llmState !== 'CLOSED') {
+      await this.setPresence('busy', 'AI 暂时不可用');
+      return;
+    }
+
+    await this.setPresence('online', '');
   }
 
   private get restBaseUrl(): string {
@@ -411,6 +430,92 @@ export class RocketChatClient {
     }
 
     return data;
+  }
+
+  private async apiPost(endpoint: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const response = await fetch(`${this.restBaseUrl}/api/v1/${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.authHeaders,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json() as Record<string, unknown>;
+
+    if (!response.ok) {
+      throw new Error(`Rocket.Chat API 请求失败: ${endpoint} (${response.status})`);
+    }
+
+    return data;
+  }
+
+  private async setPresence(status: PresenceStatus, message: string): Promise<void> {
+    if (!this.authToken || !this.userId) {
+      return;
+    }
+
+    if (this.lastPresence?.status === status && this.lastPresence.message === message) {
+      return;
+    }
+
+    try {
+      await this.apiPost('users.setStatus', { status, message });
+      this.lastPresence = { status, message };
+    } catch (err) {
+      this.logger.warn('同步 Rocket.Chat 状态失败', { status, error: String(err) });
+    }
+  }
+
+  private async resolveMessageMeta(message: IMessage, meta?: Partial<IMessageMeta>): Promise<IMessageMeta> {
+    if (meta?.roomType) {
+      return {
+        roomParticipant: meta.roomParticipant ?? true,
+        roomType: meta.roomType,
+        ...(meta.roomName ? { roomName: meta.roomName } : {}),
+      };
+    }
+
+    const roomId = message.rid?.trim();
+    if (!roomId) {
+      return {
+        roomParticipant: meta?.roomParticipant ?? true,
+        roomType: 'c',
+        ...(meta?.roomName ? { roomName: meta.roomName } : {}),
+      };
+    }
+
+    const cached = this.roomMetaCache.get(roomId);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const data = await this.apiGet('rooms.info', { roomId });
+      const rawRoom = typeof data.room === 'object' && data.room !== null
+        ? data.room as Record<string, unknown>
+        : data;
+      const roomType = rawRoom.t;
+      if (roomType === 'c' || roomType === 'p' || roomType === 'd' || roomType === 'l') {
+        const resolved: IMessageMeta = {
+          roomParticipant: true,
+          roomType,
+          ...(typeof rawRoom.name === 'string'
+            ? { roomName: rawRoom.name }
+            : (meta?.roomName ? { roomName: meta.roomName } : {})),
+        };
+        this.roomMetaCache.set(roomId, resolved);
+        return resolved;
+      }
+    } catch (err) {
+      this.logger.warn('补充房间元数据失败', { roomId, error: String(err) });
+    }
+
+    return {
+      roomParticipant: meta?.roomParticipant ?? true,
+      roomType: 'c',
+      ...(meta?.roomName ? { roomName: meta.roomName } : {}),
+    };
   }
 
   private getHistoryEndpoints(roomType?: IMessageMeta['roomType']): string[] {
@@ -482,7 +587,7 @@ export class RocketChatClient {
 
   private async subscribeAndListen(): Promise<void> {
     // Bot.reactToMessages 的回调签名: (error, message, meta?)
-    await this.bot.reactToMessages((err: any, message?: any, meta?: any) => {
+    await this.bot.reactToMessages(async (err: any, message?: any, meta?: any) => {
       if (this.shutdownFlag) return;
       if (err) {
         this.logger.error('消息接收错误', { error: String(err) });
@@ -490,8 +595,12 @@ export class RocketChatClient {
         this.scheduleReconnect();
         return;
       }
-      if (message && meta) {
-        this.callback?.(null, message as IMessage, meta as IMessageMeta);
+      if (message) {
+        const resolvedMeta = await this.resolveMessageMeta(
+          message as IMessage,
+          meta as Partial<IMessageMeta> | undefined,
+        );
+        this.callback?.(null, message as IMessage, resolvedMeta);
       }
     });
     this.logger.info('已订阅消息流');

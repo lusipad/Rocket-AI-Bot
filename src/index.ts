@@ -90,7 +90,8 @@ async function main() {
     }
     limiter.touch(msg.roomId, msg.userId);
 
-    logger.info('收到 @mention', {
+    logger.info('收到消息触发', {
+      trigger: msg.roomType === 'd' ? 'dm' : 'mention',
       username: msg.username,
       room: msg.roomName || msg.roomId,
       text: msg.text.slice(0, 100),
@@ -138,6 +139,13 @@ async function main() {
   });
 
   await bot.connect();
+  await bot.syncAvailability(llm.circuitBreaker.stateName);
+
+  const presenceTimer = setInterval(() => {
+    bot.syncAvailability(llm.circuitBreaker.stateName).catch((err) => {
+      logger.warn('同步机器人状态失败', { error: String(err) });
+    });
+  }, 10000);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (bot as any)['callback'] = (err: Error | null, message: any, meta: any) =>
@@ -183,6 +191,7 @@ async function main() {
   // --- 优雅关闭 ---
   const shutdown = async (signal: string) => {
     logger.info(`收到 ${signal}，开始优雅关闭...`);
+    clearInterval(presenceTimer);
     scheduler.stopAll();
     deduplicator.flush();
     server.close();

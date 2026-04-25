@@ -11,6 +11,191 @@ function createLogger() {
   };
 }
 
+test('RocketChatClient 应按连接与 LLM 状态同步 Rocket.Chat 状态', async () => {
+  const client = new RocketChatClient(
+    {
+      rocketchat: {
+        host: 'http://127.0.0.1:3000',
+        useSsl: false,
+        username: 'rocketbot',
+        password: 'bot_password',
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  (client as never as Record<string, unknown>).userId = 'bot-user-id';
+  (client as never as Record<string, unknown>).authToken = 'auth-token';
+
+  const requests: Array<{ url: string; body?: string }> = [];
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    });
+
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    (client as never as Record<string, unknown>).connected = true;
+    await client.syncAvailability('CLOSED');
+    await client.syncAvailability('OPEN');
+
+    (client as never as Record<string, unknown>).connected = false;
+    await client.syncAvailability('CLOSED');
+
+    assert.deepEqual(
+      requests.map((item) => ({ url: item.url, body: JSON.parse(item.body ?? '{}') })),
+      [
+        {
+          url: 'http://127.0.0.1:3000/api/v1/users.setStatus',
+          body: { status: 'online', message: '' },
+        },
+        {
+          url: 'http://127.0.0.1:3000/api/v1/users.setStatus',
+          body: { status: 'busy', message: 'AI 暂时不可用' },
+        },
+        {
+          url: 'http://127.0.0.1:3000/api/v1/users.setStatus',
+          body: { status: 'offline', message: 'AI 已离线' },
+        },
+      ],
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('RocketChatClient 断开连接时应主动同步为离线状态', async () => {
+  const client = new RocketChatClient(
+    {
+      rocketchat: {
+        host: 'http://127.0.0.1:3000',
+        useSsl: false,
+        username: 'rocketbot',
+        password: 'bot_password',
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  (client as never as Record<string, unknown>).userId = 'bot-user-id';
+  (client as never as Record<string, unknown>).authToken = 'auth-token';
+  (client as never as Record<string, unknown>).connected = true;
+
+  let disconnected = false;
+  (client as never as Record<string, unknown>).bot = {
+    disconnect() {
+      disconnected = true;
+      return Promise.resolve();
+    },
+  };
+
+  const requests: Array<{ url: string; body?: string }> = [];
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    });
+
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    await client.disconnect();
+
+    assert.equal(disconnected, true);
+    assert.deepEqual(
+      requests.map((item) => ({ url: item.url, body: JSON.parse(item.body ?? '{}') })),
+      [{
+        url: 'http://127.0.0.1:3000/api/v1/users.setStatus',
+        body: { status: 'offline', message: 'AI 已离线' },
+      }],
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('RocketChatClient 应在 SDK 缺少 meta 时补齐私聊房间类型', async () => {
+  const client = new RocketChatClient(
+    {
+      rocketchat: {
+        host: 'http://127.0.0.1:3000',
+        useSsl: false,
+        username: 'rocketbot',
+        password: 'bot_password',
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  (client as never as Record<string, unknown>).userId = 'bot-user-id';
+  (client as never as Record<string, unknown>).authToken = 'auth-token';
+
+  let reactHandler: ((err: Error | null, message?: Record<string, unknown>, meta?: Record<string, unknown>) => void) | null = null;
+  (client as never as Record<string, unknown>).bot = {
+    reactToMessages(handler: typeof reactHandler) {
+      reactHandler = handler;
+      return Promise.resolve();
+    },
+  };
+
+  let receivedMeta: Record<string, unknown> | null = null;
+  (client as never as Record<string, unknown>).callback = (_err: Error | null, _message: Record<string, unknown>, meta: Record<string, unknown>) => {
+    receivedMeta = meta;
+  };
+
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (!url.includes('/api/v1/rooms.info')) {
+      throw new Error(`Unexpected fetch url: ${url}`);
+    }
+
+    return new Response(JSON.stringify({
+      room: {
+        _id: 'DM1',
+        t: 'd',
+      },
+      success: true,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    await (client as never as { subscribeAndListen: () => Promise<void> }).subscribeAndListen();
+    await reactHandler?.(
+      null,
+      {
+        _id: 'msg-dm-1',
+        rid: 'DM1',
+        msg: '私聊测试',
+        u: { _id: 'user-1', username: 'alice' },
+      },
+      {},
+    );
+
+    assert.deepEqual(receivedMeta, {
+      roomParticipant: true,
+      roomType: 'd',
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('RocketChatClient 应获取最近消息并将本地图片转成 data URL', async () => {
   const client = new RocketChatClient(
     {

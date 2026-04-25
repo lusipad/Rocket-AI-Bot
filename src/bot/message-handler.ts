@@ -87,16 +87,17 @@ export class MessageRouter {
 
     this.logger.debug('收到消息', { username: message.username, room: message.roomName });
 
-    // 检测 @mention
+    // 群聊要求 @mention，私聊默认直接触发
     const botName = this.config.rocketchat.botUsername;
     const mentionPattern = new RegExp(`@${botName}\\b`, 'i');
-    if (mentionPattern.test(text)) {
+    const shouldHandle = meta.roomType === 'd' || mentionPattern.test(text);
+    if (shouldHandle) {
       const handler = this.handlers.get('mention');
       if (handler) {
         try {
           await handler(message);
         } catch (error) {
-          this.logger.error('mention 处理器异常', { error: String(error), msgId });
+          this.logger.error('消息处理器异常', { error: String(error), msgId });
         }
       }
     }

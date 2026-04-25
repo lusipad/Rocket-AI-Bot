@@ -88,6 +88,68 @@ test('普通 mention 只处理一次，重复消息会被去重', async () => {
   assert.equal(mentions, 1);
 });
 
+test('私聊消息无需 @ 也应触发处理', async () => {
+  const router = new MessageRouter(
+    { botUserId: 'bot-user-id' } as never,
+    new FakeDeduplicator() as never,
+    { rocketchat: { botUsername: 'RocketBot' } } as never,
+    createLogger() as never,
+  );
+
+  let mentions = 0;
+  router.on('mention', async () => {
+    mentions += 1;
+  });
+
+  await router.handleRawMessage(
+    null,
+    {
+      _id: 'msg-dm-1',
+      msg: '帮我总结一下上面的讨论',
+      rid: 'room-dm-1',
+      u: { _id: 'user-1', username: 'alice' },
+    },
+    {
+      roomParticipant: true,
+      roomType: 'd',
+      roomName: 'alice',
+    },
+  );
+
+  assert.equal(mentions, 1);
+});
+
+test('群聊未 @ 机器人时不应触发处理', async () => {
+  const router = new MessageRouter(
+    { botUserId: 'bot-user-id' } as never,
+    new FakeDeduplicator() as never,
+    { rocketchat: { botUsername: 'RocketBot' } } as never,
+    createLogger() as never,
+  );
+
+  let mentions = 0;
+  router.on('mention', async () => {
+    mentions += 1;
+  });
+
+  await router.handleRawMessage(
+    null,
+    {
+      _id: 'msg-room-1',
+      msg: '帮我总结一下上面的讨论',
+      rid: 'room-1',
+      u: { _id: 'user-1', username: 'alice' },
+    },
+    {
+      roomParticipant: true,
+      roomType: 'c',
+      roomName: 'general',
+    },
+  );
+
+  assert.equal(mentions, 0);
+});
+
 test('mention 消息应携带图片附件信息', async () => {
   const router = new MessageRouter(
     { botUserId: 'bot-user-id' } as never,
