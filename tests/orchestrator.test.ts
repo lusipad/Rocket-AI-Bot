@@ -1391,6 +1391,17 @@ test('buildSystemPrompt 在启用模型原生联网时应给出明确边界', ()
   assert.doesNotMatch(prompt, /结尾显式附上“来源”小节/);
 });
 
+test('buildSystemPrompt 应明确 Azure DevOps Server 仓库只读边界', () => {
+  const prompt = buildSystemPrompt({
+    llm: {},
+    rocketchat: { botUsername: 'RocketBot' },
+  } as never);
+
+  assert.match(prompt, /Azure DevOps Server 代码仓库只读/);
+  assert.match(prompt, /仅读取 main/);
+  assert.match(prompt, /不要修改代码、commit、push、创建或更新 PR/);
+});
+
 test('buildSystemPrompt 在激活 artifact skill 后应包含 skill 说明', () => {
   const registry = createSkillRegistry([{
     name: 'artifact-writer',

@@ -1,7 +1,7 @@
 ---
 name: pr-review
 description: 当用户明确要求审查或总结某个 PR 时使用。
-allowed-tools: azure_devops search_code read_file room_history exec_codex
+allowed-tools: azure_devops azure_devops_server_rest search_code read_file room_history exec_codex
 ---
 # PR Review
 

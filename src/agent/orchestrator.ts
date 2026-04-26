@@ -95,6 +95,8 @@ ${nativeWebSearchRules}${extraInstruction}
 - room_history: 在当前 Rocket.Chat 房间或当前线程中补充读取更早的讨论消息
 - exec_codex: 调用 Codex CLI 执行复杂编程任务（代码生成、重构、测试等）
 - azure_devops: 查询 Azure DevOps 工作项/PR/构建状态
+- azure_devops_server_rest: 查询 on-prem Azure DevOps Server/TFS REST；默认只允许 GET 和安全读取型 POST，写操作必须先 dryRun 预览，再显式 allowWrite 执行
+- 当前 RocketBot 对 Azure DevOps Server 代码仓库只读且仅读取 main；不要修改代码、commit、push、创建或更新 PR，相关请求应转为读取 main 后给出分析和建议
 
 ## 安全规则
 - 不要读取 .env、credentials、密钥文件
@@ -834,6 +836,11 @@ function buildSkillExamples(skillName: string): [string, string] {
       return [
         '@RocketBot $ado-lookup 看一下 PAYMENT 项目最近失败的 pipeline',
         '@RocketBot 用 ado-lookup 查 work item 12345',
+      ];
+    case 'azure-devops-server':
+      return [
+        '@RocketBot $azure-devops-server dry-run 预览 Azure DevOps Server projects 查询',
+        '@RocketBot 用 azure-devops-server 查 TFS 仓库的活跃 PR',
       ];
     case 'pr-review':
       return [

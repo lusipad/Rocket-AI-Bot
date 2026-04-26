@@ -1,7 +1,7 @@
 ---
 name: ado-lookup
 description: 当用户主要在查 Azure DevOps 的工单、PR、Pipeline 状态时使用。
-allowed-tools: azure_devops room_history exec_codex
+allowed-tools: azure_devops azure_devops_server_rest room_history exec_codex
 ---
 # Azure DevOps Lookup
 

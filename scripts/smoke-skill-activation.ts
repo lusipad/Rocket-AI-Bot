@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { loadConfig } from '../src/config/index.ts';
 import { RequestLogStore, type RequestLogEntry } from '../src/observability/request-log-store.ts';
+import { createAzureDevOpsServerRestTool } from '../src/tools/azure-devops-server-rest.ts';
 
 type SkillSource = 'explicit' | 'model' | 'system';
 
@@ -27,6 +30,7 @@ interface ScenarioDefinition {
   requiredSkill: string;
   requiredSource: SkillSource;
   requiredTool?: string;
+  adoWorkItemTitle?: string;
   optional?: boolean;
 }
 
@@ -52,7 +56,7 @@ const DEFAULT_SMOKE_USER: SmokeUser = {
 
 const REQUEST_TIMEOUT_MS = 90_000;
 const POLL_INTERVAL_MS = 2_000;
-const BETWEEN_MESSAGES_DELAY_MS = 6_000;
+const BETWEEN_MESSAGES_DELAY_MS = 13_000;
 const GROUP_READY_DELAY_MS = 2_000;
 
 async function main(): Promise<void> {
@@ -60,6 +64,9 @@ async function main(): Promise<void> {
   const requestLogStore = new RequestLogStore();
   const runId = buildRunId();
   const rocketChatBaseUrl = normalizeBaseUrl(config.rocketchat.host, config.rocketchat.useSsl);
+  const azureDevOpsServerRestReady = isAzureDevOpsServerRestReady(config);
+  const liveWriteSmokeEnabled = process.env.AZURE_DEVOPS_SERVER_LIVE_WRITE_SMOKE === '1';
+  const liveWriteTitle = `RocketBot live write smoke ${runId}`;
 
   await assertBotHealth(`http://127.0.0.1:${config.web.port}`);
 
@@ -103,6 +110,15 @@ async function main(): Promise<void> {
         requiredTool: 'azure_devops',
       },
       {
+        name: 'dm-azure-devops-server-rest',
+        roomId: dmRoomId,
+        text: `[smoke:${runId}:ado-server] 请用 azure-devops-server 通过 azure_devops_server_rest dryRun 预览 GET projects 查询，只需要说明预览 URL。`,
+        requiredSkill: 'azure-devops-server',
+        requiredSource: 'explicit',
+        requiredTool: 'azure_devops_server_rest',
+        optional: !azureDevOpsServerRestReady,
+      },
+      {
         name: 'dm-pr-review',
         roomId: dmRoomId,
         text: `[smoke:${runId}:pr] 请用 pr-review 审查一下当前 Azure DevOps 项目最近一个 PR 的主要风险；如果没有 PR，就明确说无法审查。`,
@@ -120,6 +136,25 @@ async function main(): Promise<void> {
       },
     ];
 
+    if (liveWriteSmokeEnabled) {
+      if (!azureDevOpsServerRestReady) {
+        throw new Error('AZURE_DEVOPS_SERVER_LIVE_WRITE_SMOKE=1 但 Azure DevOps Server REST 配置不可用');
+      }
+
+      scenarios.splice(3, 0, {
+        name: 'dm-azure-devops-server-live-write',
+        roomId: dmRoomId,
+        text:
+          `[smoke:${runId}:ado-server-write] 请使用 $azure-devops-server 创建一个 Azure DevOps Server Task，标题必须是 "${liveWriteTitle}"。`
+          + '要求先用 azure_devops_server_rest 对 PATCH wit/workitems/$Task 做 dryRun=true 预览，'
+          + '然后用同样 payload 设置 allowWrite=true 和 jsonPatch=true 执行真实创建，最后回复创建出的 work item id。',
+        requiredSkill: 'azure-devops-server',
+        requiredSource: 'explicit',
+        requiredTool: 'azure_devops_server_rest',
+        adoWorkItemTitle: liveWriteTitle,
+      });
+    }
+
     const results: ScenarioResult[] = [];
 
     for (let index = 0; index < scenarios.length; index += 1) {
@@ -131,6 +166,16 @@ async function main(): Promise<void> {
 
       const entry = await waitForRequestLog(requestLogStore, DEFAULT_SMOKE_USER.username, scenario.text, startedAt);
       const result = evaluateScenario(scenario, entry);
+
+      if (scenario.adoWorkItemTitle && result.passed) {
+        try {
+          await verifyAzureDevOpsServerWorkItemTitle(config, scenario.adoWorkItemTitle);
+        } catch (error) {
+          result.passed = false;
+          result.note = appendNote(result.note, `ADO work item 回查失败: ${toErrorMessage(error)}`);
+        }
+      }
+
       results.push(result);
 
       console.log(formatScenarioResult(result));
@@ -154,6 +199,84 @@ async function main(): Promise<void> {
 
 function buildRunId(): string {
   return new Date().toISOString().replace(/[-:.TZ]/g, '').slice(2, 14);
+}
+
+function isAzureDevOpsServerRestReady(config: ReturnType<typeof loadConfig>): boolean {
+  const collectionUrl = config.azureDevOpsServer?.collectionUrl || config.azureDevOps?.serverUrl;
+  const scriptPath = path.resolve(
+    config.azureDevOpsServer?.scriptPath
+    ?? path.join('.agents', 'skills', 'azure-devops-server', 'scripts', 'Invoke-AzureDevOpsServerApi.ps1'),
+  );
+
+  return Boolean(collectionUrl && fs.existsSync(scriptPath));
+}
+
+async function verifyAzureDevOpsServerWorkItemTitle(
+  config: ReturnType<typeof loadConfig>,
+  title: string,
+): Promise<void> {
+  const collectionUrl = config.azureDevOpsServer?.collectionUrl || config.azureDevOps?.serverUrl;
+  if (!collectionUrl) {
+    throw new Error('缺少 Azure DevOps Server collection URL');
+  }
+
+  const scriptPath = path.resolve(
+    config.azureDevOpsServer?.scriptPath
+    ?? path.join('.agents', 'skills', 'azure-devops-server', 'scripts', 'Invoke-AzureDevOpsServerApi.ps1'),
+  );
+  const tool = createAzureDevOpsServerRestTool({
+    collectionUrl,
+    authMode: config.azureDevOpsServer?.authMode ?? (config.azureDevOpsServer?.pat || config.azureDevOps?.pat ? 'pat' : 'default-credentials'),
+    pat: config.azureDevOpsServer?.pat ?? config.azureDevOps?.pat,
+    project: config.azureDevOpsServer?.project ?? config.azureDevOps?.project,
+    team: config.azureDevOpsServer?.team,
+    apiVersion: config.azureDevOpsServer?.apiVersion,
+    serverVersionHint: config.azureDevOpsServer?.serverVersionHint,
+    searchBaseUrl: config.azureDevOpsServer?.searchBaseUrl,
+    testResultsBaseUrl: config.azureDevOpsServer?.testResultsBaseUrl,
+    scriptPath,
+    powerShellPath: config.azureDevOpsServer?.powerShellPath,
+  });
+
+  const queryTitle = title.replace(/'/g, "''");
+  const result = await tool.execute(
+    {
+      method: 'POST',
+      area: 'wit',
+      project: config.azureDevOpsServer?.project ?? config.azureDevOps?.project,
+      resource: 'wiql',
+      body: {
+        query:
+          "Select [System.Id], [System.Title], [System.State] From WorkItems "
+          + `Where [System.TeamProject] = '${config.azureDevOpsServer?.project ?? config.azureDevOps?.project ?? 'test'}' `
+          + `And [System.Title] = '${queryTitle}'`,
+      },
+    },
+    createNoopLogger() as never,
+  );
+
+  if (!result.success) {
+    throw new Error(String(result.data.error ?? 'WIQL 查询失败'));
+  }
+
+  const payload = result.data.result;
+  const workItems = isRecord(payload) && Array.isArray(payload.workItems) ? payload.workItems : [];
+  if (workItems.length === 0) {
+    throw new Error(`未查到标题为 "${title}" 的工作项`);
+  }
+}
+
+function createNoopLogger() {
+  return {
+    info() {},
+    warn() {},
+    error() {},
+    debug() {},
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function assertBotHealth(webBaseUrl: string): Promise<void> {
@@ -365,6 +488,10 @@ function formatScenarioResult(result: ScenarioResult): string {
   const status = result.passed ? 'PASS' : 'FAIL';
   const note = result.note ? ` | ${result.note}` : '';
   return `[smoke] ${status} ${result.name} | requestId=${result.requestId} | status=${result.status} | skills=${result.activeSkills.join(', ') || '-'} | tools=${result.usedTools.join(', ') || '-'}${note}`;
+}
+
+function appendNote(existing: string | undefined, addition: string): string {
+  return existing ? `${existing}；${addition}` : addition;
 }
 
 function authHeaders(loginResult: RocketChatLoginResult): Record<string, string> {

@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { loadConfig } from './config/index.js';
@@ -22,6 +23,7 @@ import { createRepoSearchTool } from './tools/repo-search.js';
 import { createReadFileTool } from './tools/read-file.js';
 import { createCodexTool } from './tools/codex.js';
 import { createAzureDevOpsTool } from './tools/azure-devops.js';
+import { createAzureDevOpsServerRestTool } from './tools/azure-devops-server-rest.js';
 import { createRoomHistoryTool } from './tools/room-history.js';
 import { TaskPersistence, type TaskDef } from './scheduler/persistence.js';
 import { Scheduler } from './scheduler/index.js';
@@ -97,6 +99,35 @@ async function main() {
       }),
     );
     logger.info('Azure DevOps 工具已注册');
+  }
+
+  const azureDevOpsServerCollectionUrl =
+    config.azureDevOpsServer?.collectionUrl
+    || config.azureDevOps?.serverUrl;
+  const azureDevOpsServerPat =
+    config.azureDevOpsServer?.pat
+    || config.azureDevOps?.pat;
+  const azureDevOpsServerScriptPath = path.resolve(
+    config.azureDevOpsServer?.scriptPath
+    ?? path.join('.agents', 'skills', 'azure-devops-server', 'scripts', 'Invoke-AzureDevOpsServerApi.ps1'),
+  );
+  if (azureDevOpsServerCollectionUrl && fs.existsSync(azureDevOpsServerScriptPath)) {
+    registry.register(
+      createAzureDevOpsServerRestTool({
+        collectionUrl: azureDevOpsServerCollectionUrl,
+        authMode: config.azureDevOpsServer?.authMode ?? (azureDevOpsServerPat ? 'pat' : 'default-credentials'),
+        pat: azureDevOpsServerPat,
+        project: config.azureDevOpsServer?.project ?? config.azureDevOps?.project,
+        team: config.azureDevOpsServer?.team,
+        apiVersion: config.azureDevOpsServer?.apiVersion,
+        serverVersionHint: config.azureDevOpsServer?.serverVersionHint,
+        searchBaseUrl: config.azureDevOpsServer?.searchBaseUrl,
+        testResultsBaseUrl: config.azureDevOpsServer?.testResultsBaseUrl,
+        scriptPath: azureDevOpsServerScriptPath,
+        powerShellPath: config.azureDevOpsServer?.powerShellPath,
+      }),
+    );
+    logger.info('Azure DevOps Server REST 工具已注册', { scriptPath: azureDevOpsServerScriptPath });
   }
 
   // --- Rocket.Chat ---

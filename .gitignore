@@ -3,6 +3,7 @@ dist/
 data/
 data/logs/
 data/memory/processed-msg.json
+.omx/
 .env
 *.log
 *.tsbuildinfo
