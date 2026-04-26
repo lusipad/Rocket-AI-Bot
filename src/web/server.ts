@@ -4,14 +4,25 @@ import type { Logger } from '../utils/logger.js';
 import type { Scheduler } from '../scheduler/index.js';
 import type { LLMClient } from '../llm/client.js';
 import type { RocketChatClient } from '../bot/client.js';
+import type { SkillRegistry } from '../skills/registry.js';
+import type { RequestLogStore } from '../observability/request-log-store.js';
+import type { DiscussionSummaryAdminService } from '../discussion/admin-service.js';
 import { createTaskRoutes } from './api/tasks.js';
 import { createStatusRoutes } from './api/status.js';
+import { createSkillRoutes } from './api/skills.js';
+import { createRequestRoutes } from './api/requests.js';
+import { createContextRoutes } from './api/context.js';
+
+const ADMIN_ROUTE_ALIASES = ['/', '/tasks', '/skills', '/requests', '/logs', '/config'];
 
 export interface WebContext {
   logger: Logger;
   scheduler: Scheduler;
   llm: LLMClient;
   bot: RocketChatClient;
+  skillRegistry: SkillRegistry;
+  requestLogStore: RequestLogStore;
+  discussionAdminService: DiscussionSummaryAdminService;
   webSecret?: string;
 }
 
@@ -52,10 +63,26 @@ export function createWebServer(ctx: WebContext): ReturnType<typeof express> {
 
   // API 路由
   app.use('/api/tasks', createTaskRoutes(ctx.scheduler, ctx.logger));
-  app.use('/api/status', createStatusRoutes(ctx.llm, ctx.bot, ctx.scheduler, ctx.logger));
+  app.use('/api/status', createStatusRoutes(
+    ctx.llm,
+    ctx.bot,
+    ctx.scheduler,
+    ctx.skillRegistry,
+    ctx.requestLogStore,
+    ctx.logger,
+  ));
+  app.use('/api/skills', createSkillRoutes(ctx.skillRegistry, ctx.logger));
+  app.use('/api/requests', createRequestRoutes(ctx.requestLogStore, ctx.logger));
+  app.use('/api/context', createContextRoutes(ctx.discussionAdminService, ctx.logger));
 
   // 静态文件：React SPA
   const adminDir = path.resolve('src/web/admin');
+  for (const route of ADMIN_ROUTE_ALIASES) {
+    app.get(route, (_req, res) => {
+      const target = route === '/' ? '/admin' : `/admin${route}`;
+      res.redirect(302, target);
+    });
+  }
   app.use('/admin', express.static(adminDir));
   app.get('/admin/*', (_req, res) => {
     res.sendFile(path.join(adminDir, 'index.html'));

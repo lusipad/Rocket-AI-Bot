@@ -8,6 +8,7 @@ export interface BotMessageImage {
 }
 
 export interface RequestContext {
+  requestId?: string;
   roomId: string;
   roomType?: IMessageMeta['roomType'];
   threadId?: string;

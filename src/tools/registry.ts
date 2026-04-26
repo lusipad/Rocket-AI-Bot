@@ -3,14 +3,20 @@ import type { Logger } from '../utils/logger.js';
 import type { ToolDef } from '../llm/client.js';
 import { sanitizeError } from '../utils/helpers.js';
 import type { RequestContext } from '../bot/message-handler.js';
+import type { ToolSource } from './source.js';
+
+export type ToolData = Record<string, unknown> & {
+  sources?: ToolSource[];
+};
 
 export interface ToolResult {
   success: boolean;
-  data: Record<string, unknown>;
+  data: ToolData;
 }
 
 export interface ToolExecutionContext {
   request?: RequestContext;
+  requestId?: string;
 }
 
 export interface Tool {
@@ -58,7 +64,7 @@ export class ToolRegistry {
       return { success: false, data: { error: `未知工具: ${name}` } };
     }
 
-    const requestId = crypto.randomUUID();
+    const requestId = context.requestId ?? crypto.randomUUID();
     this.logger.info('执行工具', {
       requestId,
       tool: name,

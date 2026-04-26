@@ -9,6 +9,8 @@
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
     "test": "node --import tsx --test tests/**/*.test.ts",
+    "smoke:skills": "node --import tsx scripts/smoke-skill-activation.ts",
+    "smoke:commands": "node --import tsx scripts/smoke-command-flow.ts",
     "web-admin:dev": "cd web-admin && npm run dev",
     "web-admin:build": "cd web-admin && npm run build"
   },

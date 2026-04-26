@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import type { Tool, ToolResult } from './registry.js';
 import type { Logger } from '../utils/logger.js';
+import { isPathWithin } from '../utils/helpers.js';
+import { createFileSource, dedupeSources, type ToolSource } from './source.js';
 
 const EXCLUDED_DIRS = [
   'node_modules', '.git', 'dist', 'build', '.next',
@@ -54,6 +56,7 @@ export function createRepoSearchTool(repoRoots: { path: string; name: string }[]
       }
 
       const allResults: string[] = [];
+      const allSources: ToolSource[] = [];
       for (const repo of searchDirs) {
         try {
           const rgs = buildRgArgs(query, filePattern);
@@ -62,6 +65,7 @@ export function createRepoSearchTool(repoRoots: { path: string; name: string }[]
           if (result) {
             allResults.push(`--- ${repo.name} (${repo.path}) ---`);
             allResults.push(result);
+            allSources.push(...extractSources(result, repo));
           }
         } catch {
           // 跳过无法搜索的目录
@@ -79,6 +83,7 @@ export function createRepoSearchTool(repoRoots: { path: string; name: string }[]
           matches: ['(见下方输出)'],
           summary: `找到匹配结果`,
           output,
+          sources: dedupeSources(allSources).slice(0, 10),
         },
       };
     },
@@ -120,4 +125,39 @@ function execRg(args: string[]): Promise<string> {
       }
     });
   });
+}
+
+function extractSources(
+  output: string,
+  repo: { path: string; name: string },
+): ToolSource[] {
+  const sources: ToolSource[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.match(/^(.*?):(\d+):/);
+    if (!match) {
+      continue;
+    }
+
+    const rawPath = match[1].trim();
+    const lineNo = Number(match[2]);
+    if (!rawPath || !Number.isFinite(lineNo)) {
+      continue;
+    }
+
+    const sourcePath = toSourcePath(rawPath, repo.path);
+    sources.push(createFileSource(sourcePath, lineNo, undefined, `${repo.name}: ${sourcePath}`));
+  }
+  return sources;
+}
+
+function toSourcePath(rawPath: string, repoPath: string): string {
+  const absolutePath = path.isAbsolute(rawPath)
+    ? rawPath
+    : path.resolve(repoPath, rawPath);
+
+  if (isPathWithin(repoPath, absolutePath)) {
+    return path.relative(repoPath, absolutePath).replace(/\\/g, '/');
+  }
+
+  return rawPath.replace(/\\/g, '/');
 }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Tool, ToolResult } from './registry.js';
 import type { Logger } from '../utils/logger.js';
 import { isPathWithin } from '../utils/helpers.js';
+import { createFileSource } from './source.js';
 
 const MAX_FILE_SIZE = 1024 * 1024; // 1MB
 
@@ -63,6 +64,8 @@ export function createReadFileTool(repoRoots: { path: string; name: string }[]):
       try {
         let content = fs.readFileSync(fullPath, 'utf-8');
         const totalLines = content.split('\n').length;
+        let sourceStartLine: number | undefined;
+        let sourceEndLine: number | undefined;
 
         // 行范围过滤
         if (lines) {
@@ -71,8 +74,11 @@ export function createReadFileTool(repoRoots: { path: string; name: string }[]):
           const s = Math.max(1, start ?? 1) - 1;
           const e = Math.min(allLines.length, end ?? allLines.length);
           content = allLines.slice(s, e).join('\n');
+          sourceStartLine = s + 1;
+          sourceEndLine = e;
         }
 
+        const relativePath = path.relative(root.path, fullPath).replace(/\\/g, '/');
         return {
           success: true,
           data: {
@@ -80,6 +86,7 @@ export function createReadFileTool(repoRoots: { path: string; name: string }[]):
             totalLines,
             fileName: path.basename(fullPath),
             truncated: content.length > 20000,
+            sources: [createFileSource(relativePath, sourceStartLine, sourceEndLine)],
           },
         };
       } catch {

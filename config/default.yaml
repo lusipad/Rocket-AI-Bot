@@ -10,7 +10,8 @@ llm:
   endpoint: "${LLM_ENDPOINT}"
   apiKey: "${LLM_API_KEY}"
   model: "${LLM_MODEL}"
-  apiMode: "responses"
+  deepModel: "${LLM_DEEP_MODEL}"
+  apiMode: "chat_completions"
   contextWindow: 128000
   nativeWebSearch:
     enabled: true

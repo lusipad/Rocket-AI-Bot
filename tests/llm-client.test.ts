@@ -105,6 +105,54 @@ test('LLMClient 应在启用原生联网时合并 provider tools 和 requestBody
   ]);
 });
 
+test('LLMClient 应支持单次请求覆盖模型', async () => {
+  const llm = new LLMClient(
+    {
+      llm: {
+        endpoint: 'https://example.com/v1',
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        deepModel: 'gpt-5.5-pro',
+        contextWindow: 32768,
+        circuitBreaker: {
+          failureThreshold: 3,
+          recoveryTimeout: 1000,
+        },
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  let capturedRequest: Record<string, unknown> | null = null;
+  (llm as any).client = {
+    chat: {
+      completions: {
+        create: async (request: Record<string, unknown>) => {
+          capturedRequest = request;
+          return {
+            choices: [{
+              index: 0,
+              finish_reason: 'stop',
+              logprobs: null,
+              message: {
+                role: 'assistant',
+                content: 'ok',
+              },
+            }],
+          };
+        },
+      },
+    },
+  };
+
+  await llm.chat([
+    { role: 'user', content: '深入分析' },
+  ], [], { model: 'gpt-5.5-pro' });
+
+  assert.ok(capturedRequest);
+  assert.equal(capturedRequest.model, 'gpt-5.5-pro');
+});
+
 test('LLMClient 在 responses 模式下应构造 Responses 请求并归一化函数调用', async () => {
   const llm = new LLMClient(
     {

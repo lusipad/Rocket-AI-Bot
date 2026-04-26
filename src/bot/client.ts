@@ -60,6 +60,7 @@ export interface RecentMessageOptions {
   excludeMessageId?: string;
   currentTimestamp?: Date;
   threadId?: string;
+  maxLookbackMs?: number;
 }
 
 export interface DiscussionHistoryPageOptions {
@@ -68,6 +69,7 @@ export interface DiscussionHistoryPageOptions {
   currentTimestamp?: Date;
   threadId?: string;
   useExtendedWindow?: boolean;
+  maxLookbackMs?: number;
 }
 
 export type PresenceStatus = 'online' | 'busy' | 'away' | 'offline';
@@ -85,6 +87,9 @@ export class RocketChatClient {
   private attemptCount = 0;
   private roomMetaCache = new Map<string, IMessageMeta>();
   private lastPresence: { status: PresenceStatus; message: string } | null = null;
+  private readonly socketCloseHandler = (event?: { code?: number; reason?: string }) => {
+    this.handleSocketClose(event);
+  };
 
   constructor(config: Config, logger: Logger) {
     this.config = config;
@@ -121,6 +126,7 @@ export class RocketChatClient {
       this.logger.info(`正在连接到 Rocket.Chat: ${useSsl ? 'wss' : 'ws'}://${host}`);
 
       await this.bot.connect({ host, useSsl });
+      await this.attachSocketCloseWatcher();
       const result: any = await this.bot.login({ username, password });
 
       this.userId = this.bot.userId ?? result?.id ?? null;
@@ -152,6 +158,29 @@ export class RocketChatClient {
       await this.bot.sendToRoomId(text, roomId);
     } catch (err) {
       this.logger.error('发送消息失败', { roomId, error: String(err) });
+    }
+  }
+
+  async postToRoomId(text: string, roomId: string): Promise<string | null> {
+    try {
+      const data = await this.apiPost('chat.postMessage', { roomId, text });
+      const message = typeof data.message === 'object' && data.message !== null
+        ? data.message as Record<string, unknown>
+        : null;
+      return typeof message?._id === 'string' ? message._id : null;
+    } catch (err) {
+      this.logger.error('发送消息失败', { roomId, error: String(err) });
+      return null;
+    }
+  }
+
+  async updateRoomMessage(roomId: string, msgId: string, text: string): Promise<boolean> {
+    try {
+      await this.apiPost('chat.update', { roomId, msgId, text });
+      return true;
+    } catch (err) {
+      this.logger.error('更新消息失败', { roomId, msgId, error: String(err) });
+      return false;
     }
   }
 
@@ -194,6 +223,7 @@ export class RocketChatClient {
       count,
       options.currentTimestamp,
       useExtendedWindow,
+      options.maxLookbackMs,
     );
 
     return this.toConversationMessages(selected);
@@ -231,6 +261,7 @@ export class RocketChatClient {
       limit,
       anchorTimestamp,
       options.useExtendedWindow ?? true,
+      options.maxLookbackMs,
     );
     const oldestReturned = selected[selected.length - 1];
 
@@ -246,15 +277,15 @@ export class RocketChatClient {
     count: number,
     currentTimestamp?: Date,
     useExtendedWindow = false,
+    maxLookbackMsOverride?: number,
   ): IMessage[] {
     if (candidates.length === 0) return [];
 
     const anchorTimestamp = currentTimestamp?.getTime()
       ?? this.getMessageTimestamp(candidates[0])
       ?? Date.now();
-    const maxLookbackMs = useExtendedWindow
-      ? EXTENDED_DISCUSSION_LOOKBACK_MS
-      : DEFAULT_DISCUSSION_LOOKBACK_MS;
+    const maxLookbackMs = maxLookbackMsOverride
+      ?? (useExtendedWindow ? EXTENDED_DISCUSSION_LOOKBACK_MS : DEFAULT_DISCUSSION_LOOKBACK_MS);
     const softGapMs = useExtendedWindow
       ? EXTENDED_DISCUSSION_SOFT_GAP_MS
       : DEFAULT_DISCUSSION_SOFT_GAP_MS;
@@ -606,8 +637,35 @@ export class RocketChatClient {
     this.logger.info('已订阅消息流');
   }
 
+  private async attachSocketCloseWatcher(): Promise<void> {
+    const botWithSocket = this.bot as unknown as { socket?: Promise<{ ddp?: { off?: (event: string, listener: Function) => unknown; on?: (event: string, listener: Function) => unknown } }> };
+    const driver = await botWithSocket.socket;
+    const ddp = driver?.ddp;
+    if (!ddp?.on) {
+      return;
+    }
+
+    ddp.off?.('close', this.socketCloseHandler);
+    ddp.on('close', this.socketCloseHandler);
+  }
+
+  private handleSocketClose(event?: { code?: number; reason?: string }): void {
+    if (this.shutdownFlag) {
+      return;
+    }
+
+    this.connected = false;
+    this.logger.warn('Rocket.Chat DDP 连接已关闭，准备重连', {
+      code: event?.code,
+      reason: event?.reason,
+    });
+    void this.setPresence('offline', 'AI 已离线');
+    this.scheduleReconnect();
+  }
+
   private scheduleReconnect(): void {
     if (this.shutdownFlag) return;
+    if (this.reconnectTimer) return;
 
     this.attemptCount++;
     const baseDelay = 1000;
@@ -619,6 +677,7 @@ export class RocketChatClient {
 
     this.reconnectTimer = setTimeout(async () => {
       if (this.shutdownFlag) return;
+      this.reconnectTimer = null;
       await this.connect();
     }, jitter);
   }

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { SkillRegistry } from '../src/skills/registry.ts';
 import { createWebServer } from '../src/web/server.ts';
 import { Scheduler } from '../src/scheduler/index.ts';
 import { TaskPersistence } from '../src/scheduler/persistence.ts';
+import { RequestLogStore } from '../src/observability/request-log-store.ts';
 
 function createLogger() {
   return {
@@ -29,8 +32,76 @@ function createScheduler(root: string) {
   );
 }
 
+function createSkillRegistry(root: string): SkillRegistry {
+  const skillsRoot = path.join(root, 'skills');
+  const statePath = path.join(root, 'skill-state.json');
+  const codeLookupDir = path.join(skillsRoot, 'code-lookup');
+  const adoLookupDir = path.join(skillsRoot, 'ado-lookup');
+  fs.mkdirSync(codeLookupDir, { recursive: true });
+  fs.mkdirSync(adoLookupDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(codeLookupDir, 'SKILL.md'),
+    '---\n'
+    + 'name: code-lookup\n'
+    + 'description: 查代码\n'
+    + 'allowed-tools: search_code read_file\n'
+    + '---\n'
+    + '- 查代码\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(adoLookupDir, 'SKILL.md'),
+    '---\n'
+    + 'name: ado-lookup\n'
+    + 'description: 查 ADO\n'
+    + 'allowed-tools: azure_devops\n'
+    + '---\n'
+    + '- 查 ADO\n',
+    'utf8',
+  );
+
+  return new SkillRegistry(skillsRoot, undefined, statePath);
+}
+
+function createGitSkillRepo(root: string, relativeDir = '.'): string {
+  const repoDir = path.join(root, 'skill-repo');
+  const skillDir = relativeDir === '.' ? repoDir : path.join(repoDir, relativeDir);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, 'SKILL.md'),
+    '---\n'
+    + 'name: external-skill\n'
+    + 'description: 外部安装 skill\n'
+    + 'allowed-tools: search_code read_file\n'
+    + '---\n'
+    + '- 外部安装\n',
+    'utf8',
+  );
+
+  const initResult = spawnSync('git', ['init', '--quiet', repoDir], { encoding: 'utf8' });
+  if (initResult.status !== 0) {
+    throw new Error(initResult.stderr || initResult.stdout || 'git init 失败');
+  }
+
+  spawnSync('git', ['-C', repoDir, 'config', 'user.email', 'test@example.com'], { encoding: 'utf8' });
+  spawnSync('git', ['-C', repoDir, 'config', 'user.name', 'Test User'], { encoding: 'utf8' });
+  const addResult = spawnSync('git', ['-C', repoDir, 'add', '.'], { encoding: 'utf8' });
+  if (addResult.status !== 0) {
+    throw new Error(addResult.stderr || addResult.stdout || 'git add 失败');
+  }
+
+  const commitResult = spawnSync('git', ['-C', repoDir, 'commit', '--quiet', '-m', 'init'], { encoding: 'utf8' });
+  if (commitResult.status !== 0) {
+    throw new Error(commitResult.stderr || commitResult.stdout || 'git commit 失败');
+  }
+
+  return repoDir;
+}
+
 async function withServer<T>(
   scheduler: Scheduler,
+  skillRegistry: SkillRegistry,
+  requestLogStore: RequestLogStore,
   run: (baseUrl: string) => Promise<T>,
 ): Promise<T> {
   const app = createWebServer({
@@ -39,10 +110,33 @@ async function withServer<T>(
     llm: {
       circuitBreaker: { stateName: 'CLOSED' },
       getModel: () => 'gpt-4',
+      getDeepModel: () => 'gpt-4-pro',
+      getApiMode: () => 'chat_completions',
+      probeApiModes: async () => ({
+        current: 'chat_completions',
+        recommended: 'chat_completions',
+        results: [
+          {
+            mode: 'chat_completions',
+            ok: true,
+            durationMs: 12,
+            model: 'gpt-4',
+            reply: 'pong',
+          },
+          {
+            mode: 'responses',
+            ok: false,
+            durationMs: 8,
+            error: 'unsupported',
+          },
+        ],
+      }),
     } as never,
     bot: {
       isConnected: false,
     } as never,
+    skillRegistry,
+    requestLogStore,
     webSecret: 'secret-token',
   });
 
@@ -70,8 +164,10 @@ async function withServer<T>(
 test('健康检查接口不应要求鉴权', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
   const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/health`);
     assert.equal(response.status, 200);
 
@@ -82,9 +178,57 @@ test('健康检查接口不应要求鉴权', async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('管理端根路径与旧路径别名应重定向到 /admin', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const rootResponse = await fetch(`${baseUrl}/`, { redirect: 'manual' });
+    assert.equal(rootResponse.status, 302);
+    assert.equal(rootResponse.headers.get('location'), '/admin');
+
+    const skillsResponse = await fetch(`${baseUrl}/skills`, { redirect: 'manual' });
+    assert.equal(skillsResponse.status, 302);
+    assert.equal(skillsResponse.headers.get('location'), '/admin/skills');
+  });
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('状态接口应支持探测 LLM API 兼容模式', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/status/llm-api-mode-probe`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(response.status, 200);
+
+    const body = await response.json();
+    assert.equal(body.current, 'chat_completions');
+    assert.equal(body.recommended, 'chat_completions');
+    assert.deepEqual(body.results.map((result: { mode: string; ok: boolean }) => [result.mode, result.ok]), [
+      ['chat_completions', true],
+      ['responses', false],
+    ]);
+  });
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('任务局部更新时应保留已有 cron 和 room', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
   const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
   scheduler.addTask({
     name: 'daily-report',
     prompt: '生成日报并发送到频道',
@@ -93,7 +237,7 @@ test('任务局部更新时应保留已有 cron 和 room', async () => {
     enabled: true,
   });
 
-  await withServer(scheduler, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks/daily-report`, {
       method: 'PUT',
       headers: {
@@ -120,8 +264,10 @@ test('任务局部更新时应保留已有 cron 和 room', async () => {
 test('创建任务时应接受独立 prompt 字段', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
   const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: {
@@ -147,6 +293,295 @@ test('创建任务时应接受独立 prompt 字段', async () => {
     room: 'GENERAL',
     enabled: true,
   }]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('skills 接口应返回已装载列表并支持切换启用状态', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const listResponse = await fetch(`${baseUrl}/api/skills`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(listResponse.status, 200);
+
+    const list = await listResponse.json();
+    assert.equal(list.length, 2);
+    assert.equal(list[0].enabled, true);
+
+    const updateResponse = await fetch(`${baseUrl}/api/skills/code-lookup`, {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(updateResponse.status, 200);
+
+    const updated = await updateResponse.json();
+    assert.equal(updated.enabled, false);
+
+    const statusResponse = await fetch(`${baseUrl}/api/status`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(statusResponse.status, 200);
+
+    const status = await statusResponse.json();
+    assert.deepEqual(status.skills, {
+      installed: 2,
+      enabled: 1,
+    });
+    assert.deepEqual(status.requests, {
+      total: 0,
+      success: 0,
+      error: 0,
+      rejected: 0,
+      byKind: {
+        chat: 0,
+        scheduler: 0,
+      },
+    });
+  });
+
+  assert.equal(skillRegistry.isEnabled('code-lookup'), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('skills reload 接口应重新扫描新安装的 skill', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const newSkillDir = path.join(root, 'skills', 'artifact-writer');
+    fs.mkdirSync(newSkillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(newSkillDir, 'SKILL.md'),
+      '---\n'
+      + 'name: artifact-writer\n'
+      + 'description: 生成制品\n'
+      + 'allowed-tools: search_code read_file azure_devops\n'
+      + '---\n'
+      + '- 生成制品\n',
+      'utf8',
+    );
+
+    const reloadResponse = await fetch(`${baseUrl}/api/skills/reload`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(reloadResponse.status, 200);
+
+    const body = await reloadResponse.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.skills.map((skill: { name: string }) => skill.name), [
+      'ado-lookup',
+      'artifact-writer',
+      'code-lookup',
+    ]);
+
+    const listResponse = await fetch(`${baseUrl}/api/skills`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(listResponse.status, 200);
+    const list = await listResponse.json();
+    assert.equal(list.length, 3);
+    assert.equal(list[1].enabled, false);
+  });
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('skills 详情接口应返回指定 skill 的完整信息', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/skills/code-lookup`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(response.status, 200);
+
+    const detail = await response.json();
+    assert.equal(detail.name, 'code-lookup');
+    assert.equal(detail.enabled, true);
+    assert.match(detail.directory, /code-lookup$/);
+    assert.match(detail.instructions, /查代码/);
+  });
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('skills 卸载接口应移除项目 skill 并返回最新列表', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/skills/ado-lookup`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(response.status, 200);
+
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.skills.map((skill: { name: string }) => skill.name), ['code-lookup']);
+
+    const detailResponse = await fetch(`${baseUrl}/api/skills/ado-lookup`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(detailResponse.status, 404);
+  });
+
+  assert.equal(fs.existsSync(path.join(root, 'skills', 'ado-lookup')), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('skills 安装接口应从 git 仓库安装 skill', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+  const repoDir = createGitSkillRepo(root, 'packages/external-skill');
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/skills/install`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        source: repoDir,
+        subdir: 'packages/external-skill',
+      }),
+    });
+    assert.equal(response.status, 201);
+
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.installed.name, 'external-skill');
+    assert.deepEqual(body.skills.map((skill: { name: string }) => skill.name), [
+      'ado-lookup',
+      'code-lookup',
+      'external-skill',
+    ]);
+  });
+
+  assert.equal(fs.existsSync(path.join(root, 'skills', 'external-skill', 'SKILL.md')), true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('requests 接口应返回请求记录列表、详情和摘要', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  requestLogStore.record({
+    requestId: 'req-chat-1',
+    kind: 'chat',
+    status: 'success',
+    finishReason: 'reply',
+    model: 'gpt-4',
+    startedAt: '2026-04-26T08:00:00.000Z',
+    finishedAt: '2026-04-26T08:00:01.200Z',
+    durationMs: 1200,
+    userId: 'user-1',
+    username: 'alice',
+    roomId: 'GENERAL',
+    roomType: 'c',
+    prompt: '帮我总结',
+    reply: '总结好了',
+    activeSkills: ['artifact-writer'],
+    skillSources: { 'artifact-writer': 'explicit' },
+    usedTools: ['room_history'],
+    rounds: 2,
+  });
+  requestLogStore.record({
+    requestId: 'req-scheduler-1',
+    kind: 'scheduler',
+    status: 'error',
+    finishReason: 'circuit_breaker',
+    model: 'gpt-4',
+    startedAt: '2026-04-26T09:00:00.000Z',
+    finishedAt: '2026-04-26T09:00:05.000Z',
+    durationMs: 5000,
+    username: '系统',
+    roomId: 'general',
+    taskName: 'daily-news',
+    prompt: '搜索新闻',
+    error: 'AI 服务暂时不可用',
+    activeSkills: ['scheduled-report'],
+    skillSources: { 'scheduled-report': 'system' },
+    usedTools: [],
+    rounds: 1,
+  });
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const listResponse = await fetch(`${baseUrl}/api/requests?kind=chat`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(listResponse.status, 200);
+    const list = await listResponse.json();
+    assert.equal(list.length, 1);
+    assert.equal(list[0].requestId, 'req-chat-1');
+
+    const detailResponse = await fetch(`${baseUrl}/api/requests/req-scheduler-1`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(detailResponse.status, 200);
+    const detail = await detailResponse.json();
+    assert.equal(detail.taskName, 'daily-news');
+    assert.equal(detail.finishReason, 'circuit_breaker');
+
+    const summaryResponse = await fetch(`${baseUrl}/api/requests/summary/recent`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(summaryResponse.status, 200);
+    const summary = await summaryResponse.json();
+    assert.deepEqual(summary, {
+      total: 2,
+      success: 1,
+      error: 1,
+      rejected: 0,
+      byKind: {
+        chat: 1,
+        scheduler: 1,
+      },
+      lastFinishedAt: '2026-04-26T09:00:05.000Z',
+    });
+  });
 
   fs.rmSync(root, { recursive: true, force: true });
 });

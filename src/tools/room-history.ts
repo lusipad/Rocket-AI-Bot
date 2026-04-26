@@ -1,11 +1,15 @@
 import type { DiscussionHistoryPage, RocketChatClient } from '../bot/client.js';
+import { ContextPolicyStore, resolvePublicChannelLookbackMs } from '../context/policy-store.js';
 import type { Tool, ToolExecutionContext, ToolResult } from './registry.js';
 import type { Logger } from '../utils/logger.js';
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 30;
 
-export function createRoomHistoryTool(bot: Pick<RocketChatClient, 'getDiscussionHistoryPage'>): Tool {
+export function createRoomHistoryTool(
+  bot: Pick<RocketChatClient, 'getDiscussionHistoryPage'>,
+  contextPolicyStore = new ContextPolicyStore(),
+): Tool {
   return {
     definition: {
       type: 'function' as const,
@@ -59,6 +63,11 @@ export function createRoomHistoryTool(bot: Pick<RocketChatClient, 'getDiscussion
           currentTimestamp: request.timestamp,
           threadId: request.threadId,
           useExtendedWindow: true,
+          maxLookbackMs: resolvePublicChannelLookbackMs(
+            contextPolicyStore.get(),
+            request.roomType,
+            true,
+          ),
         },
       );
 

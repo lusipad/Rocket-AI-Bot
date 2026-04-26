@@ -53,6 +53,7 @@ export const configSchema = z.object({
     endpoint: z.string(),
     apiKey: z.string(),
     model: z.string().default('gpt-4'),
+    deepModel: z.string().optional(),
     apiMode: z.enum(['chat_completions', 'responses']).default('chat_completions'),
     contextWindow: z.number().default(128000),
     circuitBreaker: circuitBreakerSchema.default({}),

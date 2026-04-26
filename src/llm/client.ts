@@ -7,11 +7,32 @@ export type ToolDef = OpenAI.Chat.Completions.ChatCompletionTool;
 export type ChatMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 export type Choice = OpenAI.Chat.Completions.ChatCompletion.Choice;
 export type Completion = OpenAI.Chat.Completions.ChatCompletion;
+export interface CompletionMetadata {
+  webSearchUsed: boolean;
+}
+export interface ChatOptions {
+  model?: string;
+}
+export type LLMApiMode = Config['llm']['apiMode'];
+export interface ApiModeProbeResult {
+  mode: LLMApiMode;
+  ok: boolean;
+  durationMs: number;
+  model?: string;
+  reply?: string;
+  error?: string;
+}
+export interface ApiModeProbeSummary {
+  current: LLMApiMode;
+  recommended?: LLMApiMode;
+  results: ApiModeProbeResult[];
+}
 type ProviderTool = Record<string, unknown>;
 type ResponseInputItem = Record<string, unknown>;
 
 const MAX_TRANSIENT_RETRIES = 2;
 const RETRY_BACKOFF_MS = 800;
+const PROBE_TIMEOUT_MS = 20000;
 
 export class LLMClient {
   private client: OpenAI;
@@ -41,6 +62,7 @@ export class LLMClient {
   async chat(
     messages: ChatMessage[],
     tools?: ToolDef[],
+    options: ChatOptions = {},
   ): Promise<Completion> {
     if (this.breaker.isOpen) {
       throw new CircuitBreakerOpenError();
@@ -49,8 +71,8 @@ export class LLMClient {
     for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
       try {
         const response = this.config.llm.apiMode === 'responses'
-          ? await this.chatWithResponses(messages, tools)
-          : await this.chatWithChatCompletions(messages, tools);
+          ? await this.chatWithResponses(messages, tools, options)
+          : await this.chatWithChatCompletions(messages, tools, options);
 
         this.breaker.recordSuccess();
         return response;
@@ -78,21 +100,84 @@ export class LLMClient {
     return this.model;
   }
 
+  getDeepModel(): string | undefined {
+    return this.config.llm.deepModel?.trim() || undefined;
+  }
+
+  getApiMode(): Config['llm']['apiMode'] {
+    return this.config.llm.apiMode;
+  }
+
+  async probeApiModes(): Promise<ApiModeProbeSummary> {
+    const results: ApiModeProbeResult[] = [];
+    for (const mode of ['chat_completions', 'responses'] as const) {
+      results.push(await this.probeApiMode(mode));
+    }
+
+    const current = this.config.llm.apiMode;
+    const recommended = results.find((result) => result.mode === current && result.ok)?.mode
+      ?? results.find((result) => result.ok)?.mode;
+
+    return { current, recommended, results };
+  }
+
+  private async probeApiMode(mode: LLMApiMode): Promise<ApiModeProbeResult> {
+    const startedAt = Date.now();
+    const messages: ChatMessage[] = [{ role: 'user', content: '只回复：pong' }];
+    try {
+      const completion = mode === 'responses'
+        ? await withTimeout(
+          this.client.responses.create(
+            this.buildResponsesRequest(messages) as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+          ),
+          PROBE_TIMEOUT_MS,
+        )
+        : await withTimeout(
+          this.client.chat.completions.create(
+            this.buildChatCompletionsRequest(messages) as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+          ),
+          PROBE_TIMEOUT_MS,
+        );
+
+      const reply = mode === 'responses'
+        ? this.extractResponseText(completion as OpenAI.Responses.Response)
+        : String((completion as Completion).choices[0]?.message?.content ?? '').trim();
+
+      return {
+        mode,
+        ok: true,
+        durationMs: Date.now() - startedAt,
+        model: completion.model,
+        reply,
+      };
+    } catch (error) {
+      return {
+        mode,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: summarizeError(error),
+      };
+    }
+  }
+
   private async chatWithChatCompletions(
     messages: ChatMessage[],
     tools?: ToolDef[],
+    options: ChatOptions = {},
   ): Promise<Completion> {
-    return this.client.chat.completions.create(
-      this.buildChatCompletionsRequest(messages, tools) as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+    const completion = await this.client.chat.completions.create(
+      this.buildChatCompletionsRequest(messages, tools, options.model) as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
     );
+    return attachCompletionMetadata(completion, { webSearchUsed: false });
   }
 
   private async chatWithResponses(
     messages: ChatMessage[],
     tools?: ToolDef[],
+    options: ChatOptions = {},
   ): Promise<Completion> {
     const response = await this.client.responses.create(
-      this.buildResponsesRequest(messages, tools) as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+      this.buildResponsesRequest(messages, tools, options.model) as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
     );
 
     return this.normalizeResponsesCompletion(response);
@@ -101,6 +186,7 @@ export class LLMClient {
   private buildChatCompletionsRequest(
     messages: ChatMessage[],
     tools?: ToolDef[],
+    model = this.model,
   ): Record<string, unknown> {
     const nativeWebSearch = this.config.llm.nativeWebSearch ?? {
       enabled: false,
@@ -114,7 +200,7 @@ export class LLMClient {
     const request: Record<string, unknown> = {
       ...(this.config.llm.extraBody ?? {}),
       ...nativeWebSearchBody,
-      model: this.model,
+      model,
       messages,
       temperature: 0.7,
       max_tokens: 4096,
@@ -131,6 +217,7 @@ export class LLMClient {
   private buildResponsesRequest(
     messages: ChatMessage[],
     tools?: ToolDef[],
+    model = this.model,
   ): Record<string, unknown> {
     const nativeWebSearch = this.config.llm.nativeWebSearch ?? {
       enabled: false,
@@ -144,7 +231,7 @@ export class LLMClient {
     const request: Record<string, unknown> = {
       ...(this.config.llm.extraBody ?? {}),
       ...nativeWebSearchBody,
-      model: this.model,
+      model,
       input: this.buildResponseInput(messages),
       temperature: 0.7,
       max_output_tokens: 4096,
@@ -308,6 +395,9 @@ export class LLMClient {
   private normalizeResponsesCompletion(response: OpenAI.Responses.Response): Completion {
     const functionCalls = (response.output ?? []).filter((item) => item.type === 'function_call');
     const content = this.extractResponseText(response);
+    const webSearchUsed = (response.output ?? []).some((item) =>
+      typeof item.type === 'string' && item.type.includes('web_search'),
+    );
     const message: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam = {
       role: 'assistant',
       content: content || null,
@@ -324,7 +414,7 @@ export class LLMClient {
       }));
     }
 
-    return {
+    return attachCompletionMetadata({
       id: response.id,
       object: 'chat.completion',
       created: typeof response.created_at === 'number'
@@ -337,7 +427,7 @@ export class LLMClient {
         logprobs: null,
         message,
       }],
-    } as Completion;
+    } as Completion, { webSearchUsed });
   }
 
   private extractResponseText(response: OpenAI.Responses.Response): string {
@@ -378,9 +468,45 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error(`探测超时 (${timeoutMs}ms)`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+function summarizeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, ' ').slice(0, 300);
+}
+
 export class CircuitBreakerOpenError extends Error {
   constructor() {
     super('AI 服务暂时不可用，请稍后再试');
     this.name = 'CircuitBreakerOpenError';
   }
+}
+
+export function getCompletionMetadata(completion: Completion): CompletionMetadata {
+  const meta = (completion as Completion & { __rocketbotMeta?: CompletionMetadata }).__rocketbotMeta;
+  return {
+    webSearchUsed: meta?.webSearchUsed === true,
+  };
+}
+
+function attachCompletionMetadata(
+  completion: Completion,
+  metadata: CompletionMetadata,
+): Completion {
+  (completion as Completion & { __rocketbotMeta?: CompletionMetadata }).__rocketbotMeta = metadata;
+  return completion;
 }

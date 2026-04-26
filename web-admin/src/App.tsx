@@ -5,6 +5,8 @@ import Dashboard from './pages/Dashboard';
 import Tasks from './pages/Tasks';
 import TaskLogs from './pages/TaskLogs';
 import Config from './pages/Config';
+import Skills from './pages/Skills';
+import Requests from './pages/Requests';
 
 const style = `
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -72,6 +74,8 @@ export default function App() {
         <span className="brand">RocketBot</span>
         <Link to="/">仪表盘</Link>
         <Link to="/tasks">任务</Link>
+        <Link to="/skills">Skills</Link>
+        <Link to="/requests">请求</Link>
         <Link to="/logs">日志</Link>
         <Link to="/config">配置</Link>
       </nav>
@@ -79,6 +83,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/tasks" element={<Tasks />} />
+          <Route path="/skills" element={<Skills />} />
+          <Route path="/requests" element={<Requests />} />
           <Route path="/logs" element={<TaskLogs />} />
           <Route path="/config" element={<Config />} />
         </Routes>

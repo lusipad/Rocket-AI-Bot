@@ -126,6 +126,68 @@ test('RocketChatClient 断开连接时应主动同步为离线状态', async () 
   }
 });
 
+test('RocketChatClient 底层 DDP close 后应标记离线并安排重连', async () => {
+  const warnings: Array<{ message: string; meta?: unknown }> = [];
+  const client = new RocketChatClient(
+    {
+      rocketchat: {
+        host: 'http://127.0.0.1:3000',
+        useSsl: false,
+        username: 'rocketbot',
+        password: 'bot_password',
+      },
+    } as never,
+    {
+      ...createLogger(),
+      warn(message: string, meta?: unknown) {
+        warnings.push({ message, meta });
+      },
+    } as never,
+  );
+
+  (client as never as Record<string, unknown>).userId = 'bot-user-id';
+  (client as never as Record<string, unknown>).authToken = 'auth-token';
+  (client as never as Record<string, unknown>).connected = true;
+
+  const requests: Array<{ url: string; body?: string }> = [];
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    });
+
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    (client as never as { handleSocketClose: (event: { code: number; reason: string }) => void })
+      .handleSocketClose({ code: 1000, reason: 'disconnect' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(client.isConnected, false);
+    assert.equal(warnings[0]?.message, 'Rocket.Chat DDP 连接已关闭，准备重连');
+    assert.deepEqual(
+      requests.map((item) => ({ url: item.url, body: JSON.parse(item.body ?? '{}') })),
+      [{
+        url: 'http://127.0.0.1:3000/api/v1/users.setStatus',
+        body: { status: 'offline', message: 'AI 已离线' },
+      }],
+    );
+    assert.notEqual((client as never as Record<string, unknown>).reconnectTimer, null);
+  } finally {
+    const timer = (client as never as Record<string, ReturnType<typeof setTimeout> | null>).reconnectTimer;
+    if (timer) {
+      clearTimeout(timer);
+    }
+    (client as never as Record<string, unknown>).reconnectTimer = null;
+    global.fetch = originalFetch;
+  }
+});
+
 test('RocketChatClient 应在 SDK 缺少 meta 时补齐私聊房间类型', async () => {
   const client = new RocketChatClient(
     {
@@ -298,6 +360,103 @@ test('RocketChatClient 应获取最近消息并将本地图片转成 data URL', 
     assert.equal(requests.length, 2);
     assert.match(requests[0].url, /\/api\/v1\/channels\.history/);
     assert.equal((requests[1].headers as Record<string, string>)['X-Auth-Token'], 'auth-token');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('RocketChatClient 应通过 REST 发送消息并返回消息 id', async () => {
+  const client = new RocketChatClient(
+    {
+      rocketchat: {
+        host: 'http://127.0.0.1:3000',
+        useSsl: false,
+        username: 'rocketbot',
+        password: 'bot_password',
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  (client as never as Record<string, unknown>).userId = 'bot-user-id';
+  (client as never as Record<string, unknown>).authToken = 'auth-token';
+
+  const originalFetch = global.fetch;
+  const requests: Array<{ url: string; body?: string }> = [];
+  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    });
+
+    return new Response(JSON.stringify({
+      success: true,
+      message: {
+        _id: 'thinking-message-id',
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const msgId = await client.postToRoomId('正在思考...', 'GENERAL');
+
+    assert.equal(msgId, 'thinking-message-id');
+    assert.deepEqual(
+      requests.map((item) => ({ url: item.url, body: JSON.parse(item.body ?? '{}') })),
+      [{
+        url: 'http://127.0.0.1:3000/api/v1/chat.postMessage',
+        body: { roomId: 'GENERAL', text: '正在思考...' },
+      }],
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('RocketChatClient 应通过 REST 更新已有消息', async () => {
+  const client = new RocketChatClient(
+    {
+      rocketchat: {
+        host: 'http://127.0.0.1:3000',
+        useSsl: false,
+        username: 'rocketbot',
+        password: 'bot_password',
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  (client as never as Record<string, unknown>).userId = 'bot-user-id';
+  (client as never as Record<string, unknown>).authToken = 'auth-token';
+
+  const originalFetch = global.fetch;
+  const requests: Array<{ url: string; body?: string }> = [];
+  global.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({
+      url: String(input),
+      body: typeof init?.body === 'string' ? init.body : undefined,
+    });
+
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  try {
+    const updated = await client.updateRoomMessage('GENERAL', 'message-id', '正式回复');
+
+    assert.equal(updated, true);
+    assert.deepEqual(
+      requests.map((item) => ({ url: item.url, body: JSON.parse(item.body ?? '{}') })),
+      [{
+        url: 'http://127.0.0.1:3000/api/v1/chat.update',
+        body: { roomId: 'GENERAL', msgId: 'message-id', text: '正式回复' },
+      }],
+    );
   } finally {
     global.fetch = originalFetch;
   }

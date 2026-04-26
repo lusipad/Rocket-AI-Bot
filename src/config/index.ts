@@ -65,7 +65,9 @@ export function loadConfig(configPath?: string): Config {
       endpoint: process.env.LLM_ENDPOINT,
       apiKey: process.env.LLM_API_KEY,
       model: process.env.LLM_MODEL,
+      deepModel: process.env.LLM_DEEP_MODEL,
       ...(coerced.llm ?? {}),
+      apiMode: process.env.LLM_API_MODE || coerced.llm?.apiMode,
     },
     azureDevOps: {
       serverUrl: process.env.AZURE_DEVOPS_URL,

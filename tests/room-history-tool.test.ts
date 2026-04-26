@@ -56,6 +56,7 @@ test('room_history 工具应基于当前请求房间与线程补拉历史', asyn
       currentTimestamp: new Date('2026-04-26T05:20:00.000Z'),
       threadId: 'thread-root',
       useExtendedWindow: true,
+      maxLookbackMs: 3 * 60 * 60 * 1000,
     },
   }]);
   assert.deepEqual(result.data, {

@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
-import { getStatus, getTasks } from '../api/client';
+import { getStatus } from '../api/client';
 
 export default function Dashboard() {
   const [status, setStatus] = useState<any>(null);
-  const [taskCount, setTaskCount] = useState(0);
 
   useEffect(() => {
     getStatus().then(setStatus).catch(console.error);
-    getTasks().then((t) => setTaskCount(t.length)).catch(() => {});
   }, []);
 
   if (!status) return <div>加载中...</div>;
@@ -32,8 +30,13 @@ export default function Dashboard() {
                 {status.connections?.llm}
               </span></td>
             </tr>
-            <tr><td>模型</td><td>{status.model}</td></tr>
+            <tr><td>默认模型</td><td>{status.model}</td></tr>
+            <tr><td>深度模型</td><td>{status.deepModel ?? '-'}</td></tr>
+            <tr><td>API 模式</td><td>{status.apiMode ?? '-'}</td></tr>
             <tr><td>调度任务</td><td>{status.scheduler?.active}/{status.scheduler?.total} 活跃</td></tr>
+            <tr><td>Skills</td><td>{status.skills?.enabled}/{status.skills?.installed} 启用</td></tr>
+            <tr><td>最近请求</td><td>{status.requests?.success}/{status.requests?.total} 成功</td></tr>
+            <tr><td>聊天/任务</td><td>{status.requests?.byKind?.chat ?? 0}/{status.requests?.byKind?.scheduler ?? 0}</td></tr>
             <tr><td>版本</td><td>{status.version}</td></tr>
           </tbody>
         </table>
