@@ -17,9 +17,9 @@ Use it for:
 - reading repository metadata
 - listing branch refs when needed to inspect server state
 - listing and reading pull requests
-- listing directories and reading file content from `main` when the repository has at least one branch or commit
+- listing directories and reading file content from `main`, or from a referenced branch/commit for review, when the repository has at least one branch or commit
 
-Do not use repository mutation routes in RocketBot's current workflow. Do not modify code, create branches, commit, push, or create/update pull requests. If the user asks for those actions, explain that this version can only read `main`, analyze the request, and provide a suggested patch or implementation plan.
+Do not use repository mutation routes in RocketBot's current workflow. Do not modify code, create branches, commit, push, or create/update pull requests. If the user asks for those actions, read the relevant content and provide a suggested patch or implementation plan.
 
 Do not claim Azure DevOps Services parity. This skill does not try to mirror every cloud-only repo tool, comment-thread helper, reviewer flow, or identity convenience flow from the official MCP.
 
@@ -37,7 +37,7 @@ Reusable rule:
 - replace `http://localhost:8081/DefaultCollection` with your collection URL
 - replace `test` with your project and repository names or IDs
 - prefer repository IDs when names are ambiguous
-- keep file and directory reads on `main`
+- default file and directory reads to `main`; for review URLs, preserve the referenced branch or commit
 
 ## Supported Read Routes
 

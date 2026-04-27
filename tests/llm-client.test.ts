@@ -224,7 +224,7 @@ test('LLMClient 在 responses 模式下应构造 Responses 请求并归一化函
 
   assert.ok(capturedRequest);
   assert.equal(capturedRequest.model, 'chatgpt-4o-latest');
-  assert.equal(capturedRequest.tool_choice, 'auto');
+  assert.equal('tool_choice' in capturedRequest, false);
   assert.equal(capturedRequest.store, false);
   assert.deepEqual(capturedRequest.tools, [
     {
@@ -263,6 +263,69 @@ test('LLMClient 在 responses 模式下应构造 Responses 请求并归一化函
     },
   }]);
   assert.equal(completion.choices[0].finish_reason, 'tool_calls');
+});
+
+test('LLMClient 应支持单次请求覆盖到 Responses 模式', async () => {
+  const llm = new LLMClient(
+    {
+      llm: {
+        endpoint: 'https://example.com/v1',
+        apiKey: 'test-key',
+        model: 'gpt-5.5',
+        apiMode: 'chat_completions',
+        contextWindow: 32768,
+        circuitBreaker: {
+          failureThreshold: 3,
+          recoveryTimeout: 1000,
+        },
+        nativeWebSearch: {
+          enabled: true,
+          tools: [{ type: 'web_search' }],
+          requestBody: { tool_choice: 'auto' },
+        },
+        extraBody: {},
+      },
+    } as never,
+    createLogger() as never,
+  );
+
+  let capturedRequest: Record<string, unknown> | null = null;
+  let chatCalled = false;
+  (llm as any).client = {
+    chat: {
+      completions: {
+        create: async () => {
+          chatCalled = true;
+          throw new Error('chat should not be called');
+        },
+      },
+    },
+    responses: {
+      create: async (request: Record<string, unknown>) => {
+        capturedRequest = request;
+        return {
+          id: 'resp_override',
+          model: 'gpt-5.5',
+          output_text: 'ok',
+          output: [{
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'ok' }],
+          }],
+        };
+      },
+    },
+  };
+
+  const completion = await llm.chat([
+    { role: 'user', content: '查最新新闻' },
+  ], [], { apiMode: 'responses' });
+
+  assert.equal(chatCalled, false);
+  assert.ok(capturedRequest);
+  assert.equal(capturedRequest.model, 'gpt-5.5');
+  assert.equal('tool_choice' in capturedRequest, false);
+  assert.equal(completion.choices[0].message.content, 'ok');
 });
 
 test('LLMClient 在 responses 模式下应转换多模态输入和工具回放消息', async () => {

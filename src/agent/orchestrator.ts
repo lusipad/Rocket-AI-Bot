@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type OpenAI from 'openai';
-import { LLMClient, CircuitBreakerOpenError, getCompletionMetadata, type ToolDef } from '../llm/client.js';
+import { LLMClient, CircuitBreakerOpenError, getCompletionMetadata, type ChatOptions, type ToolDef } from '../llm/client.js';
 import { ContextBuilder } from '../llm/context.js';
 import { SkillRegistry } from '../skills/registry.js';
 import type { SkillDefinition, SkillSummary } from '../skills/types.js';
@@ -96,7 +96,7 @@ ${nativeWebSearchRules}${extraInstruction}
 - exec_codex: 调用 Codex CLI 执行复杂编程任务（代码生成、重构、测试等）
 - azure_devops: 查询 Azure DevOps 工作项/PR/构建状态
 - azure_devops_server_rest: 查询 on-prem Azure DevOps Server/TFS REST；默认只允许 GET 和安全读取型 POST，写操作必须先 dryRun 预览，再显式 allowWrite 执行
-- 当前 RocketBot 对 Azure DevOps Server 代码仓库只读且仅读取 main；不要修改代码、commit、push、创建或更新 PR，相关请求应转为读取 main 后给出分析和建议
+- 当前 RocketBot 对 Azure DevOps Server 代码仓库只读；默认读取 main，review 请求可以读取链接引用的分支或提交；不要修改代码、commit、push、创建或更新 PR
 
 ## 安全规则
 - 不要读取 .env、credentials、密钥文件
@@ -141,6 +141,14 @@ export interface ModelModePreview {
 
 interface DeepModeSession {
   expiresAt: number;
+}
+
+interface DirectReplyResult {
+  reply: string;
+  status: 'success' | 'error';
+  finishReason: string;
+  error?: string;
+  webSearchUsed?: boolean;
 }
 
 export class Orchestrator {
@@ -279,13 +287,46 @@ export class Orchestrator {
 
     const usedToolNames = new Set<string>();
     try {
+      const directAdoUrlReply = await this.tryHandleAzureDevOpsFileUrl(
+        normalizedMessage,
+        requestId,
+        requestContext,
+        usedToolNames,
+        modelMode,
+      );
+      if (directAdoUrlReply) {
+        completeTrace(trace, [], {}, usedToolNames, 1, 'success', 'ado_url_fast_path');
+        return decorateReply(directAdoUrlReply, activeSkills, usedToolNames);
+      }
+
+      const directWebReply = activeSkills.length === 0
+        ? await this.tryHandlePublicRealtimeQuery(normalizedMessage, modelMode)
+        : null;
+      if (directWebReply) {
+        if (directWebReply.webSearchUsed) {
+          trace && (trace.webSearchUsed = true);
+        }
+        completeTrace(
+          trace,
+          activeSkills,
+          skillSources,
+          usedToolNames,
+          1,
+          directWebReply.status,
+          directWebReply.finishReason,
+          directWebReply.error,
+        );
+        return decorateReply(directWebReply.reply, activeSkills, usedToolNames);
+      }
+
+      const forceNativeWebSearch = shouldUsePublicRealtimeWebSearch(normalizedMessage, this.config);
       const context = new ContextBuilder(this.config, buildSystemPrompt(this.config, {
         availableSkills: this.skillRegistry.list(),
         activeSkills,
         deepMode: modelMode.mode === 'deep',
         deepModeStatus: this.buildDeepModeStatus(userId, requestContext, modelMode),
-      }));
-      const inlineAssistantHistory = this.config.llm.apiMode === 'responses';
+      }) + (forceNativeWebSearch ? buildRealtimeWebSearchInstruction() : ''));
+      const inlineAssistantHistory = this.config.llm.apiMode === 'responses' || forceNativeWebSearch;
 
       for (const m of selectRecentContextMessages(recentMessages, 20)) {
         const prefix = `[${m.username}] `;
@@ -309,7 +350,7 @@ export class Orchestrator {
         const response = await this.llm.chat(
           msgs,
           this.getToolDefinitions(activeSkills),
-          modelMode.mode === 'deep' ? { model: modelMode.model } : undefined,
+          buildChatOptions(modelMode, forceNativeWebSearch ? 'responses' : undefined),
         );
         const responseMeta = getCompletionMetadata(response);
         if (responseMeta.webSearchUsed) {
@@ -369,6 +410,159 @@ export class Orchestrator {
       completeTrace(trace, activeSkills, skillSources, usedToolNames, trace?.rounds ?? 0, 'error', 'exception', String(err));
       return '抱歉，出了点问题，请重试。';
     }
+  }
+
+  private async tryHandlePublicRealtimeQuery(
+    message: string,
+    modelMode: ModelModePreview,
+  ): Promise<DirectReplyResult | null> {
+    if (!shouldUsePublicRealtimeWebSearch(message, this.config)) {
+      return null;
+    }
+
+    try {
+      const response = await this.llm.chat([
+        {
+          role: 'system',
+          content: buildPublicRealtimeSystemPrompt(this.config, modelMode),
+        },
+        {
+          role: 'user',
+          content: message,
+        },
+      ], [], buildChatOptions(modelMode, 'responses'));
+      const responseMeta = getCompletionMetadata(response);
+      const reply = response.choices[0]?.message?.content?.trim() ?? '';
+      if (!reply || isWebSearchUnavailableReply(reply)) {
+        return {
+          reply: '这次请求需要实时联网，但上游模型没有返回可用的联网搜索结果。当前已启用 native web search；请稍后重试，或在后台切换到确认支持 Responses web_search 的模型/API。',
+          status: 'error',
+          finishReason: 'web_search_unavailable',
+          error: reply || 'empty web search reply',
+          webSearchUsed: responseMeta.webSearchUsed,
+        };
+      }
+
+      return {
+        reply,
+        status: 'success',
+        finishReason: 'web_search_fast_path',
+        webSearchUsed: true,
+      };
+    } catch (err) {
+      return {
+        reply: `联网搜索请求失败：${summarizeRuntimeError(err)}。当前已启用 native web search，但 provider 搜索接口本次没有成功返回；请稍后重试，或在后台切换到确认支持 Responses web_search 的模型/API。`,
+        status: 'error',
+        finishReason: 'web_search_error',
+        error: String(err),
+        webSearchUsed: false,
+      };
+    }
+  }
+
+  private async tryHandleAzureDevOpsFileUrl(
+    message: string,
+    requestId: string,
+    requestContext: RequestContext | undefined,
+    usedToolNames: Set<string>,
+    modelMode: ModelModePreview,
+  ): Promise<string | null> {
+    const fileUrl = parseAzureDevOpsFileUrl(message);
+    if (!fileUrl) {
+      return null;
+    }
+
+    const project = fileUrl.project ?? this.config.azureDevOpsServer?.project ?? this.config.azureDevOps?.project ?? fileUrl.repository;
+    const toolResult = await this.registry.execute('azure_devops_server_rest', {
+      method: 'GET',
+      area: 'git',
+      project,
+      resource: `repositories/${fileUrl.repository}/items`,
+      query: {
+        path: fileUrl.path,
+        includeContent: 'true',
+        ...fileUrl.versionQuery,
+      },
+    }, {
+      request: requestContext,
+      requestId,
+    });
+    usedToolNames.add('azure_devops_server_rest');
+
+    if (!toolResult.success) {
+      return `读取 Azure DevOps Server 文件失败：${String(toolResult.data.error ?? '未知错误')}`;
+    }
+
+    const content = extractRepositoryFileContent(toolResult.data.result);
+    if (!content) {
+      return '已读取 Azure DevOps Server 文件，但响应中没有可 review 的文本内容。';
+    }
+
+    const reviewRequest = isReviewRequest(message);
+    const baseContent = reviewRequest && shouldFetchMainBaseline(fileUrl)
+      ? await this.tryReadMainBaselineFile(fileUrl, project, requestId, requestContext, usedToolNames)
+      : undefined;
+    const numberedContent = addLineNumbers(content, 24000);
+    const numberedBaseContent = baseContent ? addLineNumbers(baseContent, 16000) : undefined;
+    const modeInstruction = reviewRequest
+      ? '请做代码 review。优先审查目标版本相对 main 的变化；按严重程度列出具体问题，包含行号；如果没有明确问题，直接说没有发现明确风险，并补充残余风险。'
+      : '请按用户请求简洁说明这个文件内容；不要编造文件中不存在的信息。';
+    const response = await this.llm.chat([
+      {
+        role: 'system',
+        content:
+          '你是 RocketBot，正在处理 Azure DevOps Server 仓库文件的只读查看请求。'
+          + '禁止建议你已经修改、提交、推送或创建 PR。回复中文，结论优先。',
+      },
+      {
+        role: 'user',
+        content:
+          `${modeInstruction}\n\n`
+          + `仓库: ${fileUrl.repository}\n`
+          + `项目: ${fileUrl.project ?? '(默认项目)'}\n`
+          + `文件: ${fileUrl.path}\n`
+          + `版本: ${fileUrl.versionLabel ?? 'main/default'}\n\n`
+          + (numberedBaseContent
+            ? `main 基线内容（带行号）:\n${numberedBaseContent}\n\n`
+            : reviewRequest && shouldFetchMainBaseline(fileUrl)
+              ? 'main 基线内容：未能读取，可能是新增文件或 main 中不存在同路径文件。\n\n'
+              : '')
+          + `内容（带行号）:\n${numberedContent}`,
+      },
+    ], [], buildChatOptions(modelMode));
+
+    return response.choices[0]?.message?.content?.trim() || '已读取文件，但无法生成 review 结果。';
+  }
+
+  private async tryReadMainBaselineFile(
+    fileUrl: AzureDevOpsFileUrl,
+    project: string,
+    requestId: string,
+    requestContext: RequestContext | undefined,
+    usedToolNames: Set<string>,
+  ): Promise<string | undefined> {
+    const result = await this.registry.execute('azure_devops_server_rest', {
+      method: 'GET',
+      area: 'git',
+      project,
+      resource: `repositories/${fileUrl.repository}/items`,
+      query: {
+        path: fileUrl.path,
+        includeContent: 'true',
+        'versionDescriptor.version': 'main',
+        'versionDescriptor.versionType': 'branch',
+      },
+    }, {
+      request: requestContext,
+      requestId,
+    });
+    usedToolNames.add('azure_devops_server_rest');
+
+    if (!result.success) {
+      return undefined;
+    }
+
+    return extractRepositoryFileContent(result.data.result);
   }
 
   private getToolDefinitions(activeSkills: SkillDefinition[]): ToolDef[] {
@@ -577,6 +771,46 @@ function buildExitDeepModeReply(config: Config): string {
   return `已退出深度模式，恢复默认模型 ${config.llm.model ?? 'gpt-4'}。`;
 }
 
+function buildChatOptions(
+  modelMode: { mode: 'normal' | 'deep'; model: string },
+  apiMode?: Config['llm']['apiMode'],
+): ChatOptions | undefined {
+  const options: ChatOptions = {};
+  if (modelMode.mode === 'deep') {
+    options.model = modelMode.model;
+  }
+  if (apiMode) {
+    options.apiMode = apiMode;
+  }
+
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
+function buildRealtimeWebSearchInstruction(): string {
+  return `
+
+## 本次请求需要实时联网
+- 本次问题属于公开互联网最新信息查询，必须使用模型原生联网搜索后再回答
+- 不要调用 activate_skill 或 exec_codex 来完成普通新闻/最新信息检索
+- 如果上游搜索失败，明确说明“联网搜索失败/超时”，不要说系统没有联网工具
+- 回答中尽量包含来源标题或原始链接`;
+}
+
+function buildPublicRealtimeSystemPrompt(
+  config: Config,
+  modelMode: { mode: 'normal' | 'deep'; model: string },
+): string {
+  const deepStatus = modelMode.mode === 'deep'
+    ? `\n- 当前使用深度模式，模型为 ${modelMode.model}。`
+    : '';
+
+  return `你是 RocketBot，运行在 Rocket.Chat 中，使用中文简洁回答。
+本次请求是公开互联网实时信息查询。你必须使用模型原生联网搜索能力获取最新信息，再给出结论。
+如果搜索失败或超时，明确说“联网搜索失败/超时”，不要声称系统没有联网工具，也不要编造新闻。
+回答尽量包含来源标题或原始链接，控制在 700 字以内。${deepStatus}
+当前默认模型：${config.llm.model ?? 'unknown'}`;
+}
+
 function syncTrace(
   trace: OrchestratorTrace | undefined,
   activeSkills: SkillDefinition[],
@@ -757,6 +991,173 @@ function buildActiveSkillInstructions(skills: SkillDefinition[]): string {
 
 ### 当前已激活的 skills
 ${skills.map((skill) => `#### ${skill.name}\n${skill.instructions}`).join('\n\n')}`;
+}
+
+interface AzureDevOpsFileUrl {
+  project?: string;
+  repository: string;
+  path: string;
+  versionLabel?: string;
+  versionQuery: Record<string, string>;
+}
+
+function parseAzureDevOpsFileUrl(message: string): AzureDevOpsFileUrl | null {
+  const match = message.match(/https?:\/\/\S+\/_git\/\S+/i);
+  if (!match) {
+    return null;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(match[0].replace(/[)\].,，。]+$/u, ''));
+  } catch {
+    return null;
+  }
+
+  const parts = url.pathname.split('/').filter(Boolean).map((part) => decodeURIComponent(part));
+  const gitIndex = parts.findIndex((part) => part.toLowerCase() === '_git');
+  if (gitIndex < 0 || !parts[gitIndex + 1]) {
+    return null;
+  }
+
+  const project = gitIndex >= 2 ? parts[gitIndex - 1] : undefined;
+  const repository = parts[gitIndex + 1];
+  const filePath = url.searchParams.get('path') || '/';
+  const versionQuery = buildVersionQuery(url.searchParams);
+
+  return {
+    project,
+    repository,
+    path: filePath,
+    versionLabel: versionQuery['versionDescriptor.version'],
+    versionQuery,
+  };
+}
+
+function buildVersionQuery(searchParams: URLSearchParams): Record<string, string> {
+  const descriptorVersion = searchParams.get('versionDescriptor.version');
+  if (descriptorVersion) {
+    return {
+      'versionDescriptor.version': descriptorVersion,
+      'versionDescriptor.versionType': searchParams.get('versionDescriptor.versionType') || 'branch',
+    };
+  }
+
+  const uiVersion = searchParams.get('version');
+  if (!uiVersion) {
+    return {
+      'versionDescriptor.version': 'main',
+      'versionDescriptor.versionType': 'branch',
+    };
+  }
+
+  if (uiVersion.startsWith('GB')) {
+    return {
+      'versionDescriptor.version': uiVersion.slice(2),
+      'versionDescriptor.versionType': 'branch',
+    };
+  }
+  if (uiVersion.startsWith('GC')) {
+    return {
+      'versionDescriptor.version': uiVersion.slice(2),
+      'versionDescriptor.versionType': 'commit',
+    };
+  }
+  if (uiVersion.startsWith('GT')) {
+    return {
+      'versionDescriptor.version': uiVersion.slice(2),
+      'versionDescriptor.versionType': 'tag',
+    };
+  }
+
+  return {
+    'versionDescriptor.version': uiVersion,
+    'versionDescriptor.versionType': 'branch',
+  };
+}
+
+function extractRepositoryFileContent(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.content === 'string') {
+    return record.content;
+  }
+  if (Array.isArray(record.value)) {
+    const firstWithContent = record.value.find((item) => (
+      item && typeof item === 'object' && typeof (item as Record<string, unknown>).content === 'string'
+    ));
+    if (firstWithContent) {
+      return (firstWithContent as Record<string, string>).content;
+    }
+  }
+
+  return undefined;
+}
+
+function addLineNumbers(content: string, maxChars: number): string {
+  const numbered = content
+    .split(/\r?\n/)
+    .map((line, index) => `${index + 1}: ${line}`)
+    .join('\n');
+
+  if (numbered.length <= maxChars) {
+    return numbered;
+  }
+
+  return `${numbered.slice(0, maxChars)}\n...内容过长，后续部分已截断...`;
+}
+
+function isReviewRequest(message: string): boolean {
+  return /review|审查|评审|风险|看下|看看/i.test(message);
+}
+
+function shouldFetchMainBaseline(fileUrl: AzureDevOpsFileUrl): boolean {
+  const version = fileUrl.versionQuery['versionDescriptor.version'];
+  return Boolean(version && version !== 'main');
+}
+
+const EXPLICIT_TIME_WINDOW_PATTERN = /(?:24\s*小时|过去\s*\d+\s*(?:小时|天|日)|近\s*\d+\s*(?:小时|天|日)|今天|今日|昨天|本周|本月)/i;
+const FRESHNESS_WORD_PATTERN = /(?:最新|最近|实时|刚刚)/i;
+const PUBLIC_INFO_TOPIC_PATTERN = /(?:新闻|资讯|热点|动态|消息|公告|发布|价格|行情|版本|更新|模型|model|release)/i;
+const PRIVATE_CONTEXT_PATTERN = /(?:本地|仓库|代码|文件|分支|提交|commit|diff|review|PR|pull\s*request|工单|work\s*item|pipeline|构建|build|CI|测试|报错|日志|Azure\s*DevOps|ADO|TFS|Rocket\.?Chat|群里|刚才|上面|上下文)/i;
+const WEB_UNAVAILABLE_REPLY_PATTERN = /(?:无法|不能|没有|未启用|不具备|没法).{0,24}(?:联网|实时|搜索|访问互联网|浏览网页)|(?:cannot|can't|unable).{0,30}(?:browse|search|internet|web)/i;
+
+function shouldUsePublicRealtimeWebSearch(message: string, config: Config): boolean {
+  if (config.llm.nativeWebSearch?.enabled !== true) {
+    return false;
+  }
+
+  const normalized = message
+    .replace(/@\S+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized || PRIVATE_CONTEXT_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  return EXPLICIT_TIME_WINDOW_PATTERN.test(normalized)
+    || (FRESHNESS_WORD_PATTERN.test(normalized) && PUBLIC_INFO_TOPIC_PATTERN.test(normalized));
+}
+
+function isWebSearchUnavailableReply(reply: string): boolean {
+  return WEB_UNAVAILABLE_REPLY_PATTERN.test(reply);
+}
+
+function summarizeRuntimeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timed? out|timeout|Request timed out/i.test(message)) {
+    return '上游搜索接口超时';
+  }
+  if (/502|upstream request failed|bad gateway/i.test(message)) {
+    return '上游搜索接口返回 502';
+  }
+  return message.replace(/\s+/g, ' ').slice(0, 200);
 }
 
 function buildActivateSkillTool(skills: SkillSummary[]): ToolDef {

@@ -32,9 +32,9 @@ RocketBot current product boundary:
 
 - Work items can be created, read, and queried. Work item writes remain preview-first.
 - Repository support is read-only.
-- Repository file and directory reads should use `main` only.
+- Repository file and directory reads default to `main`, but review requests may read the referenced branch or commit.
 - Do not modify repository code, create branches, commit, push, or create/update pull requests.
-- If a user asks to change Azure DevOps Server repository code, explain that this version can read `main`, analyze the requested change, and suggest a patch or implementation plan, but cannot perform the repo mutation workflow.
+- If a user asks to change Azure DevOps Server repository code, explain that this version can read repository content and suggest a patch or implementation plan, but cannot perform the repo mutation workflow.
 
 ### 2. Collect configuration and bootstrap the connection
 

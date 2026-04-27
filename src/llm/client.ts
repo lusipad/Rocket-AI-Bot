@@ -12,6 +12,7 @@ export interface CompletionMetadata {
 }
 export interface ChatOptions {
   model?: string;
+  apiMode?: LLMApiMode;
 }
 export type LLMApiMode = Config['llm']['apiMode'];
 export interface ApiModeProbeResult {
@@ -33,6 +34,7 @@ type ResponseInputItem = Record<string, unknown>;
 const MAX_TRANSIENT_RETRIES = 2;
 const RETRY_BACKOFF_MS = 800;
 const PROBE_TIMEOUT_MS = 20000;
+const LLM_REQUEST_TIMEOUT_MS = 45000;
 
 export class LLMClient {
   private client: OpenAI;
@@ -70,7 +72,8 @@ export class LLMClient {
 
     for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
       try {
-        const response = this.config.llm.apiMode === 'responses'
+        const apiMode = options.apiMode ?? this.config.llm.apiMode;
+        const response = apiMode === 'responses'
           ? await this.chatWithResponses(messages, tools, options)
           : await this.chatWithChatCompletions(messages, tools, options);
 
@@ -167,6 +170,7 @@ export class LLMClient {
   ): Promise<Completion> {
     const completion = await this.client.chat.completions.create(
       this.buildChatCompletionsRequest(messages, tools, options.model) as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+      { timeout: LLM_REQUEST_TIMEOUT_MS },
     );
     return attachCompletionMetadata(completion, { webSearchUsed: false });
   }
@@ -178,6 +182,7 @@ export class LLMClient {
   ): Promise<Completion> {
     const response = await this.client.responses.create(
       this.buildResponsesRequest(messages, tools, options.model) as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+      { timeout: LLM_REQUEST_TIMEOUT_MS },
     );
 
     return this.normalizeResponsesCompletion(response);
@@ -225,7 +230,7 @@ export class LLMClient {
       requestBody: {},
     };
     const nativeWebSearchBody = nativeWebSearch.enabled
-      ? nativeWebSearch.requestBody ?? {}
+      ? normalizeResponsesRequestBody(nativeWebSearch.requestBody ?? {})
       : {};
 
     const request: Record<string, unknown> = {
@@ -487,6 +492,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 function summarizeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/\s+/g, ' ').slice(0, 300);
+}
+
+function normalizeResponsesRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  if (body.tool_choice !== 'auto') {
+    return body;
+  }
+
+  const { tool_choice: _toolChoice, ...rest } = body;
+  return rest;
 }
 
 export class CircuitBreakerOpenError extends Error {
