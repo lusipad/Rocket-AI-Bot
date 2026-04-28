@@ -4,6 +4,7 @@ import { ensureDir } from '../utils/helpers.js';
 
 export interface TaskDef {
   name: string;
+  templateId?: string;
   prompt?: string;
   cron: string;
   room: string;
@@ -76,9 +77,12 @@ export class TaskPersistence {
 }
 
 function normalizeTask(task: TaskDef): TaskDef {
+  const { templateId: rawTemplateId, ...rest } = task;
   const prompt = task.prompt?.trim();
+  const templateId = rawTemplateId?.trim();
   return {
-    ...task,
+    ...rest,
+    ...(templateId ? { templateId } : {}),
     prompt: prompt || task.name,
   };
 }

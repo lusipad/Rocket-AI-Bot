@@ -297,6 +297,97 @@ test('创建任务时应接受独立 prompt 字段', async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('任务模板接口应返回内置 DevTools 模板', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/tasks/templates`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(response.status, 200);
+
+    const templates = await response.json();
+    assert.deepEqual(templates.map((template: { id: string }) => template.id), [
+      'pr-status-summary',
+      'pipeline-health-check',
+      'work-item-risk-digest',
+    ]);
+    assert.equal(templates[0].category, 'azure-devops');
+    assert.match(templates[0].defaultPrompt, /main 分支/);
+  });
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('应支持从任务模板创建调度任务', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/tasks/from-template`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        templateId: 'pipeline-health-check',
+        name: 'main-pipeline-health',
+        room: 'DEVTOOLS',
+        cron: '15 11 * * 1-5',
+        enabled: false,
+      }),
+    });
+    assert.equal(response.status, 201);
+
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.task.templateId, 'pipeline-health-check');
+  });
+
+  const [task] = scheduler.listTasks();
+  assert.equal(task.name, 'main-pipeline-health');
+  assert.equal(task.templateId, 'pipeline-health-check');
+  assert.match(task.prompt ?? '', /pipeline\/build 状态/);
+  assert.equal(task.cron, '15 11 * * 1-5');
+  assert.equal(task.room, 'DEVTOOLS');
+  assert.equal(task.enabled, false);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('从未知任务模板创建任务时应返回 404', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/tasks/from-template`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        templateId: 'missing-template',
+        name: 'bad-task',
+      }),
+    });
+    assert.equal(response.status, 404);
+  });
+
+  assert.deepEqual(scheduler.listTasks(), []);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('skills 接口应返回已装载列表并支持切换启用状态', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
   const scheduler = createScheduler(root);

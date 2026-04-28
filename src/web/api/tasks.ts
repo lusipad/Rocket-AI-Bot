@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Scheduler } from '../../scheduler/index.js';
+import { createTaskFromTemplate, getTaskTemplate, listTaskTemplates } from '../../scheduler/templates.js';
 import type { Logger } from '../../utils/logger.js';
 
 export function createTaskRoutes(scheduler: Scheduler, logger: Logger): Router {
@@ -19,6 +20,42 @@ export function createTaskRoutes(scheduler: Scheduler, logger: Logger): Router {
       typeof limit === 'string' ? parseInt(limit) : undefined,
     );
     res.json(history);
+  });
+
+  // GET /api/tasks/templates
+  router.get('/templates', (_req, res) => {
+    res.json(listTaskTemplates());
+  });
+
+  // POST /api/tasks/from-template
+  router.post('/from-template', (req, res) => {
+    try {
+      const { templateId, name, prompt, cron: cronExpr, room, enabled } = req.body;
+      if (typeof templateId !== 'string' || !templateId.trim()) {
+        return res.status(400).json({ error: 'templateId 必填' });
+      }
+      if (typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ error: 'name 必填' });
+      }
+
+      const template = getTaskTemplate(templateId.trim());
+      if (!template) {
+        return res.status(404).json({ error: `未知任务模板: ${templateId}` });
+      }
+
+      const task = createTaskFromTemplate(template, {
+        name,
+        prompt: typeof prompt === 'string' ? prompt : undefined,
+        cron: typeof cronExpr === 'string' ? cronExpr : undefined,
+        room: typeof room === 'string' ? room : undefined,
+        enabled: typeof enabled === 'boolean' ? enabled : undefined,
+      });
+      scheduler.addTask(task);
+      logger.info('模板任务已创建', { name: task.name, templateId: template.id });
+      res.status(201).json({ ok: true, task });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
   });
 
   // POST /api/tasks
@@ -55,6 +92,7 @@ export function createTaskRoutes(scheduler: Scheduler, logger: Logger): Router {
       cron: cronExpr ?? existing?.cron,
       room: room ?? existing?.room ?? 'general',
       enabled: enabled ?? existing?.enabled ?? true,
+      templateId: existing?.templateId,
     };
 
     if (!nextTask.cron) {

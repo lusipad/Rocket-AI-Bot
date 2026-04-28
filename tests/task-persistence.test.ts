@@ -29,3 +29,30 @@ test('TaskPersistence 应兼容旧任务数据并回填 prompt', () => {
 
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('TaskPersistence 应保留模板任务的 templateId', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-task-'));
+  const tasksPath = path.join(root, 'tasks.json');
+  const historyDir = path.join(root, 'history');
+  const persistence = new TaskPersistence(tasksPath, historyDir);
+
+  persistence.saveTasks([{
+    name: 'PR 摘要',
+    templateId: 'pr-status-summary',
+    prompt: '汇总 PR 状态',
+    cron: '0 10 * * 1-5',
+    room: 'GENERAL',
+    enabled: true,
+  }]);
+
+  assert.deepEqual(persistence.loadTasks(), [{
+    name: 'PR 摘要',
+    templateId: 'pr-status-summary',
+    prompt: '汇总 PR 状态',
+    cron: '0 10 * * 1-5',
+    room: 'GENERAL',
+    enabled: true,
+  }]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
