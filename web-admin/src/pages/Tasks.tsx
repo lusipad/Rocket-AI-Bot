@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { getTasks, createTask, deleteTask, runTask, updateTask, type Task } from '../api/client';
+import {
+  getTasks,
+  getTaskTemplates,
+  createTask,
+  createTaskFromTemplate,
+  deleteTask,
+  runTask,
+  updateTask,
+  type Task,
+  type TaskTemplate,
+} from '../api/client';
 
 const EMPTY_FORM: Task = {
   name: '',
@@ -11,12 +21,21 @@ const EMPTY_FORM: Task = {
 
 export default function Tasks() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [form, setForm] = useState<Task>(EMPTY_FORM);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
 
   async function load() {
-    try { setTasks(await getTasks()); } catch {}
+    try {
+      const [nextTasks, nextTemplates] = await Promise.all([
+        getTasks(),
+        getTaskTemplates(),
+      ]);
+      setTasks(nextTasks);
+      setTemplates(nextTemplates);
+    } catch {}
   }
   useEffect(() => { load(); }, []);
 
@@ -30,7 +49,11 @@ export default function Tasks() {
         enabled: form.enabled,
       });
     } else {
-      await createTask(form);
+      if (selectedTemplateId) {
+        await createTaskFromTemplate({ ...form, templateId: selectedTemplateId });
+      } else {
+        await createTask(form);
+      }
     }
     resetForm();
     load();
@@ -56,14 +79,39 @@ export default function Tasks() {
   function handleEdit(task: Task) {
     setEditingName(task.name);
     setForm(task);
+    setSelectedTemplateId(task.templateId ?? null);
     setShowForm(true);
+  }
+
+  function handleUseTemplate(template: TaskTemplate) {
+    setEditingName(null);
+    setSelectedTemplateId(template.id);
+    setForm({
+      name: suggestTaskName(template.id),
+      templateId: template.id,
+      prompt: template.defaultPrompt,
+      cron: template.defaultCron,
+      room: template.defaultRoom,
+      enabled: true,
+    });
+    setShowForm(true);
+  }
+
+  function suggestTaskName(templateId: string): string {
+    if (!tasks.some(task => task.name === templateId)) return templateId;
+    let index = 2;
+    while (tasks.some(task => task.name === `${templateId}-${index}`)) index += 1;
+    return `${templateId}-${index}`;
   }
 
   function resetForm() {
     setEditingName(null);
+    setSelectedTemplateId(null);
     setForm(EMPTY_FORM);
     setShowForm(false);
   }
+
+  const selectedTemplate = templates.find(template => template.id === selectedTemplateId);
 
   return (
     <div>
@@ -83,8 +131,39 @@ export default function Tasks() {
         </button>
       </div>
 
+      {templates.length > 0 && (
+        <div className="card">
+          <h2>DevTools 任务模板</h2>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12}}>
+            {templates.map(template => (
+              <div key={template.id} style={{border:'1px solid #eee',borderRadius:8,padding:12}}>
+                <div className="flex mb" style={{alignItems:'flex-start'}}>
+                  <div style={{flex:1}}>
+                    <strong>{template.title}</strong>
+                    <div style={{fontSize:12,color:'#666',marginTop:4}}>{template.description}</div>
+                  </div>
+                  <span className="badge ok">{template.category}</span>
+                </div>
+                <div style={{fontSize:12,color:'#666',marginBottom:10}}>
+                  <code>{template.defaultCron}</code> · #{template.defaultRoom}
+                </div>
+                <button className="sm" type="button" onClick={() => handleUseTemplate(template)}>
+                  使用模板
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {showForm && (
         <div className="card">
+          <h2>{editingName ? '编辑任务' : '创建任务'}</h2>
+          {selectedTemplate && (
+            <div className="mb" style={{fontSize:13,color:'#555'}}>
+              基于模板：<strong>{selectedTemplate.title}</strong>
+            </div>
+          )}
           <form onSubmit={handleSubmit}>
             <div className="mb"><input type="text" placeholder="任务名称" value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })} disabled={!!editingName} required /></div>
@@ -125,11 +204,12 @@ export default function Tasks() {
 
       <div className="card">
         <table>
-          <thead><tr><th>名称</th><th>任务内容</th><th>Cron</th><th>频道</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>名称</th><th>来源</th><th>任务内容</th><th>Cron</th><th>频道</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>
             {tasks.map(t => (
               <tr key={t.name}>
                 <td>{t.name}</td>
+                <td>{t.templateId ? <code>{t.templateId}</code> : '自定义'}</td>
                 <td style={{maxWidth:320,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={t.prompt}>
                   {t.prompt}
                 </td>
@@ -144,7 +224,7 @@ export default function Tasks() {
                 </td>
               </tr>
             ))}
-            {tasks.length === 0 && <tr><td colSpan={6} style={{color:'#999'}}>暂无任务</td></tr>}
+            {tasks.length === 0 && <tr><td colSpan={7} style={{color:'#999'}}>暂无任务</td></tr>}
           </tbody>
         </table>
       </div>

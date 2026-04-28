@@ -4,10 +4,21 @@ let token: string | null = null;
 
 export interface Task {
   name: string;
+  templateId?: string;
   prompt: string;
   cron: string;
   room: string;
   enabled: boolean;
+}
+
+export interface TaskTemplate {
+  id: string;
+  title: string;
+  description: string;
+  category: 'azure-devops';
+  defaultCron: string;
+  defaultRoom: string;
+  defaultPrompt: string;
 }
 
 export interface Skill {
@@ -138,6 +149,10 @@ export async function getTasks(): Promise<Task[]> {
   return request('/tasks');
 }
 
+export async function getTaskTemplates(): Promise<TaskTemplate[]> {
+  return request('/tasks/templates');
+}
+
 export async function getSkills(): Promise<Skill[]> {
   return request('/skills');
 }
@@ -176,6 +191,10 @@ export async function installSkill(input: InstallSkillRequest): Promise<{ skills
 
 export async function createTask(task: Task): Promise<void> {
   return request('/tasks', { method: 'POST', body: JSON.stringify(task) });
+}
+
+export async function createTaskFromTemplate(task: Task & { templateId: string }): Promise<{ task: Task }> {
+  return request('/tasks/from-template', { method: 'POST', body: JSON.stringify(task) });
 }
 
 export async function updateTask(name: string, task: Partial<Pick<Task, 'prompt' | 'cron' | 'room' | 'enabled'>>): Promise<void> {
