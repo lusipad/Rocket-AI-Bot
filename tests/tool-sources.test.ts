@@ -68,8 +68,12 @@ test('search_code 工具应返回匹配来源', async (t) => {
 
 function hasRipgrep(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('rg', ['--version'], (error) => {
-      resolve(!error);
-    });
+    try {
+      execFile('rg', ['--version'], (error) => {
+        resolve(!error);
+      });
+    } catch {
+      resolve(false);
+    }
   });
 }

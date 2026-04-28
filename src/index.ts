@@ -12,10 +12,12 @@ import { MessageRouter } from './bot/message-handler.js';
 import { LLMClient } from './llm/client.js';
 import {
   Orchestrator,
-  splitMessage,
-  type ConversationMessage as OrchestratorConversationMessage,
   type ModelModePreview,
 } from './agent/orchestrator.js';
+import { AgentRuntime } from './agent-core/runtime.js';
+import type { AgentConversationMessage, AgentResponse, AgentTrace } from './agent-core/types.js';
+import { toRocketChatAgentRequest, toSchedulerAgentRequest } from './adapters/rocketchat/message-normalizer.js';
+import { renderRocketChatReply } from './adapters/rocketchat/reply-renderer.js';
 import { RateLimiter } from './agent/rate-limiter.js';
 import { SkillRegistry } from './skills/registry.js';
 import { ToolRegistry } from './tools/registry.js';
@@ -39,7 +41,6 @@ import { DiscussionSummaryService, isDiscussionContextRequest } from './discussi
 import { DiscussionSummaryAdminService } from './discussion/admin-service.js';
 import { DiscussionSummaryStore } from './discussion/summary-store.js';
 import type { BotMessage } from './bot/message-handler.js';
-import type { OrchestratorTrace } from './agent/orchestrator.js';
 
 const THINKING_MESSAGE = '正在思考...';
 const DEEP_THINKING_MESSAGE = '正在深度思考...';
@@ -145,6 +146,7 @@ async function main() {
   const llm = new LLMClient(config, logger);
   const skillRegistry = new SkillRegistry(undefined, logger);
   const orchestrator = new Orchestrator(llm, registry, config, logger, skillRegistry);
+  const agentRuntime = new AgentRuntime(orchestrator, llm);
   const requestLogStore = new RequestLogStore();
   const discussionSummaryStore = new DiscussionSummaryStore();
   const discussionSummaryService = new DiscussionSummaryService(discussionSummaryStore);
@@ -159,25 +161,8 @@ async function main() {
   router.on('mention', async (msg: BotMessage) => {
     const requestId = crypto.randomUUID();
     const startedAt = Date.now();
-    const baseTrace: OrchestratorTrace = {
-      activeSkills: [],
-      skillSources: {},
-      usedTools: [],
-      rounds: 0,
-      status: 'success',
-      webSearchUsed: false,
-    };
-    const initialModelMode = orchestrator.previewModelMode(
-      msg.userId,
-      msg.text,
-      {
-        roomId: msg.roomId,
-        roomType: msg.roomType,
-        threadId: msg.threadId,
-        triggerMessageId: msg.id,
-        timestamp: msg.timestamp,
-      },
-    );
+    const initialAgentRequest = toRocketChatAgentRequest(msg, requestId);
+    const initialModelMode = agentRuntime.previewModelMode(initialAgentRequest);
 
     logger.info('收到消息触发', {
       trigger: msg.roomType === 'd' ? 'dm' : 'mention',
@@ -188,7 +173,8 @@ async function main() {
 
     const controlCommandReply = await handleControlCommand(
       msg,
-      orchestrator,
+      requestId,
+      agentRuntime,
       llm,
       contextPolicyStore,
       discussionSummaryService,
@@ -291,12 +277,13 @@ async function main() {
     });
     let isDiscussionRequest = false;
     let contextCount = 0;
-    let recentMessages: OrchestratorConversationMessage[] = [];
+    let recentMessages: AgentConversationMessage[] = [];
     let currentImages: string[] = [];
     let recentImageCount = 0;
     let summaryEnabled = false;
-    let contextSummary: OrchestratorConversationMessage | null = null;
+    let contextSummary: AgentConversationMessage | null = null;
     let publicChannelLookbackMs: number | undefined;
+    let agentResponse: AgentResponse | undefined;
     const thinkingTimer = setTimeout(() => {
       if (requestFinished) {
         return;
@@ -337,30 +324,15 @@ async function main() {
           roomType: msg.roomType,
         })
         : null;
-      const contextMessages: OrchestratorConversationMessage[] = contextSummary
+      const contextMessages: AgentConversationMessage[] = contextSummary
         ? [...recentMessages, contextSummary]
         : recentMessages;
       currentImages = await bot.resolveImageUrls(msg.images.map((image) => image.url));
       recentImageCount = recentMessages.reduce((sum, item) => sum + (item.images?.length ?? 0), 0);
-      const reply = await orchestrator.handle(
-        msg.userId,
-        msg.username,
-        msg.text,
-        contextMessages,
-        currentImages,
-        {
-          roomId: msg.roomId,
-          roomType: msg.roomType,
-          threadId: msg.threadId,
-          requestId,
-          triggerMessageId: msg.id,
-          timestamp: msg.timestamp,
-        },
-        {
-          requestId,
-          trace: baseTrace,
-        },
+      agentResponse = await agentRuntime.handle(
+        toRocketChatAgentRequest(msg, requestId, contextMessages, currentImages),
       );
+      const reply = agentResponse.text;
       const displayReply = isDiscussionRequest
         ? prependDiscussionContext(
           reply,
@@ -384,7 +356,7 @@ async function main() {
       requestFinished = true;
       clearTimeout(thinkingTimer);
 
-      const parts = splitMessage(displayReply);
+      const parts = renderRocketChatReply({ ...agentResponse, text: displayReply });
       if (parts.length === 0) {
         return;
       }
@@ -407,9 +379,9 @@ async function main() {
       requestLogStore.record({
         requestId,
         kind: 'chat',
-        status: baseTrace.status,
-        finishReason: baseTrace.finishReason,
-        model: baseTrace.modelUsed ?? llm.getModel(),
+        status: agentResponse.trace.status,
+        finishReason: agentResponse.trace.finishReason,
+        model: agentResponse.model,
         startedAt: new Date(startedAt).toISOString(),
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt,
@@ -421,11 +393,11 @@ async function main() {
         triggerMessageId: msg.id,
         prompt: msg.text,
         reply: displayReply,
-        error: baseTrace.error,
-        activeSkills: baseTrace.activeSkills,
-        skillSources: baseTrace.skillSources,
-        usedTools: baseTrace.usedTools,
-        rounds: baseTrace.rounds,
+        error: agentResponse.trace.error,
+        activeSkills: agentResponse.trace.activeSkills,
+        skillSources: agentResponse.trace.skillSources,
+        usedTools: agentResponse.trace.usedTools,
+        rounds: agentResponse.trace.rounds,
         context: {
           scope: contextScope,
           discussionRequest: isDiscussionRequest,
@@ -437,8 +409,8 @@ async function main() {
           currentImageCount: currentImages.length,
           recentImageCount,
           nativeWebSearchEnabled: config.llm.nativeWebSearch?.enabled === true,
-          webSearchUsed: baseTrace.webSearchUsed === true,
-          modelMode: baseTrace.modelMode,
+          webSearchUsed: agentResponse.trace.webSearchUsed === true,
+          modelMode: agentResponse.trace.modelMode,
           publicChannelLookbackMinutes: publicChannelLookbackMs
             ? Math.round(publicChannelLookbackMs / 60_000)
             : undefined,
@@ -464,7 +436,7 @@ async function main() {
         kind: 'chat',
         status: 'error',
         finishReason: 'handler_exception',
-        model: baseTrace.modelUsed ?? initialModelMode.model,
+        model: agentResponse?.model ?? initialModelMode.model,
         startedAt: new Date(startedAt).toISOString(),
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt,
@@ -477,10 +449,10 @@ async function main() {
         prompt: msg.text,
         reply: errorMessage,
         error: String(err),
-        activeSkills: baseTrace.activeSkills,
-        skillSources: baseTrace.skillSources,
-        usedTools: baseTrace.usedTools,
-        rounds: baseTrace.rounds,
+        activeSkills: agentResponse?.trace.activeSkills ?? [],
+        skillSources: agentResponse?.trace.skillSources ?? {},
+        usedTools: agentResponse?.trace.usedTools ?? [],
+        rounds: agentResponse?.trace.rounds ?? 0,
         context: {
           scope: contextScope,
           discussionRequest: isDiscussionRequest,
@@ -492,8 +464,8 @@ async function main() {
           currentImageCount: currentImages.length,
           recentImageCount,
           nativeWebSearchEnabled: config.llm.nativeWebSearch?.enabled === true,
-          webSearchUsed: baseTrace.webSearchUsed === true,
-          modelMode: baseTrace.modelMode ?? initialModelMode.mode,
+          webSearchUsed: agentResponse?.trace.webSearchUsed === true,
+          modelMode: agentResponse?.trace.modelMode ?? initialModelMode.mode,
           publicChannelLookbackMinutes: publicChannelLookbackMs
             ? Math.round(publicChannelLookbackMs / 60_000)
             : undefined,
@@ -521,35 +493,20 @@ async function main() {
     // 定时任务执行器：可以通过 LLM 处理
     const requestId = crypto.randomUUID();
     const startedAt = Date.now();
-    const trace: OrchestratorTrace = {
-      activeSkills: [],
-      skillSources: {},
-      usedTools: [],
-      rounds: 0,
-      status: 'success',
-      webSearchUsed: false,
-    };
+    let agentResponse: AgentResponse | undefined;
     try {
       const instruction = task.prompt?.trim() || task.name;
-      const reply = await orchestrator.handle(
-        'scheduler',
-        '系统',
-        `执行定时任务: ${instruction}`,
-        [],
-        [],
-        undefined,
-        {
-          requestId,
-          trace,
-        },
+      agentResponse = await agentRuntime.handle(
+        toSchedulerAgentRequest(requestId, instruction, task.room),
       );
+      const reply = agentResponse.text;
       await bot.sendToRoomId(reply, task.room);
       requestLogStore.record({
         requestId,
         kind: 'scheduler',
-        status: trace.status,
-        finishReason: trace.finishReason,
-        model: trace.modelUsed ?? llm.getModel(),
+        status: agentResponse.trace.status,
+        finishReason: agentResponse.trace.finishReason,
+        model: agentResponse.model,
         startedAt: new Date(startedAt).toISOString(),
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt,
@@ -558,22 +515,22 @@ async function main() {
         taskName: task.name,
         prompt: instruction,
         reply,
-        error: trace.error,
-        activeSkills: trace.activeSkills,
-        skillSources: trace.skillSources,
-        usedTools: trace.usedTools,
-        rounds: trace.rounds,
+        error: agentResponse.trace.error,
+        activeSkills: agentResponse.trace.activeSkills,
+        skillSources: agentResponse.trace.skillSources,
+        usedTools: agentResponse.trace.usedTools,
+        rounds: agentResponse.trace.rounds,
       });
-      return trace.status === 'success'
+      return agentResponse.trace.status === 'success'
         ? { success: true, output: reply.slice(0, 500) }
-        : { success: false, output: reply.slice(0, 500), error: trace.error ?? trace.finishReason };
+        : { success: false, output: reply.slice(0, 500), error: agentResponse.trace.error ?? agentResponse.trace.finishReason };
     } catch (err) {
       requestLogStore.record({
         requestId,
         kind: 'scheduler',
         status: 'error',
         finishReason: 'scheduler_exception',
-        model: trace.modelUsed ?? llm.getModel(),
+        model: agentResponse?.model ?? llm.getModel(),
         startedAt: new Date(startedAt).toISOString(),
         finishedAt: new Date().toISOString(),
         durationMs: Date.now() - startedAt,
@@ -582,10 +539,10 @@ async function main() {
         taskName: task.name,
         prompt: task.prompt?.trim() || task.name,
         error: String(err),
-        activeSkills: trace.activeSkills,
-        skillSources: trace.skillSources,
-        usedTools: trace.usedTools,
-        rounds: trace.rounds,
+        activeSkills: agentResponse?.trace.activeSkills ?? [],
+        skillSources: agentResponse?.trace.skillSources ?? {},
+        usedTools: agentResponse?.trace.usedTools ?? [],
+        rounds: agentResponse?.trace.rounds ?? 0,
       });
       return { success: false, error: String(err) };
     }
@@ -663,11 +620,12 @@ main().catch((err) => {
 
 async function handleControlCommand(
   msg: BotMessage,
-  orchestrator: Orchestrator,
+  requestId: string,
+  agentRuntime: AgentRuntime,
   llm: LLMClient,
   contextPolicyStore: ContextPolicyStore,
   discussionSummaryService: DiscussionSummaryService,
-): Promise<{ reply: string; finishReason: string; model?: string; modelMode?: ModelModePreview; trace?: OrchestratorTrace } | null> {
+): Promise<{ reply: string; finishReason: string; model?: string; modelMode?: ModelModePreview; trace?: AgentTrace } | null> {
   if (HELP_COMMAND_PATTERN.test(msg.text)) {
     return {
       finishReason: 'command_help',
@@ -687,14 +645,10 @@ async function handleControlCommand(
   }
 
   if (STATUS_COMMAND_PATTERN.test(msg.text)) {
-    const requestContext = {
-      roomId: msg.roomId,
-      roomType: msg.roomType,
-      threadId: msg.threadId,
-      triggerMessageId: msg.id,
-      timestamp: msg.timestamp,
-    };
-    const modelMode = orchestrator.previewModelMode(msg.userId, '', requestContext);
+    const modelMode = agentRuntime.previewModelMode({
+      ...toRocketChatAgentRequest(msg, requestId),
+      input: '',
+    });
     const scope = resolveContextScope({
       roomType: msg.roomType,
       threadId: msg.threadId,
@@ -735,40 +689,17 @@ async function handleControlCommand(
   }
 
   if (ORCHESTRATOR_CONTROL_COMMAND_PATTERN.test(msg.text)) {
-    const trace: OrchestratorTrace = {
-      activeSkills: [],
-      skillSources: {},
-      usedTools: [],
-      rounds: 0,
-      status: 'success',
-      webSearchUsed: false,
-    };
-    const reply = await orchestrator.handle(
-      msg.userId,
-      msg.username,
-      msg.text,
-      [],
-      [],
-      {
-        roomId: msg.roomId,
-        roomType: msg.roomType,
-        threadId: msg.threadId,
-        requestId: msg.requestId,
-        triggerMessageId: msg.id,
-        timestamp: msg.timestamp,
-      },
-      {
-        trace,
-      },
+    const response = await agentRuntime.handle(
+      toRocketChatAgentRequest(msg, requestId),
     );
 
     return {
-      reply,
-      trace,
-      finishReason: trace.finishReason ?? 'command',
-      model: trace.modelUsed ?? (trace.modelMode === 'normal' ? llm.getModel() : undefined),
-      modelMode: trace.modelMode
-        ? { mode: trace.modelMode, model: trace.modelUsed ?? llm.getModel() }
+      reply: response.text,
+      trace: response.trace,
+      finishReason: response.trace.finishReason ?? 'command',
+      model: response.model,
+      modelMode: response.trace.modelMode
+        ? { mode: response.trace.modelMode, model: response.model }
         : undefined,
     };
   }
