@@ -116,6 +116,8 @@ function buildAgentResponse(input: {
     error: input.error,
     model: input.modelMode.model,
     modelMode: input.modelMode.mode,
+    requestType: 'public_realtime',
+    sources: [],
     trace: {
       activeSkills: [],
       skillSources: {},
@@ -127,6 +129,8 @@ function buildAgentResponse(input: {
       webSearchUsed: input.webSearchUsed,
       modelUsed: input.modelMode.mode === 'deep' ? input.modelMode.model : undefined,
       modelMode: input.modelMode.mode,
+      requestType: 'public_realtime',
+      sources: [],
     },
   };
 }

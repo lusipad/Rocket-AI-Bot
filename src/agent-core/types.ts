@@ -1,5 +1,6 @@
 import type { RequestContext } from '../bot/message-handler.js';
 import type { SkillActivationSource } from '../agent/orchestrator.js';
+import type { ToolSource } from '../tools/source.js';
 
 export interface AgentActor {
   id: string;
@@ -42,6 +43,19 @@ export interface AgentRequest {
   };
 }
 
+export type AgentRequestType =
+  | 'command'
+  | 'public_realtime'
+  | 'ado_file_review'
+  | 'ado_file_lookup'
+  | 'code_query'
+  | 'ado_query'
+  | 'pr_review'
+  | 'pipeline_monitor'
+  | 'discussion'
+  | 'scheduler'
+  | 'general';
+
 export interface AgentTrace {
   activeSkills: string[];
   skillSources: Record<string, SkillActivationSource>;
@@ -53,6 +67,8 @@ export interface AgentTrace {
   webSearchUsed?: boolean;
   modelUsed?: string;
   modelMode?: 'normal' | 'deep';
+  requestType?: AgentRequestType;
+  sources?: ToolSource[];
 }
 
 export interface AgentResponseMessage {
@@ -69,6 +85,8 @@ export interface AgentResponse {
   error?: string;
   model: string;
   modelMode?: 'normal' | 'deep';
+  requestType?: AgentRequestType;
+  sources?: ToolSource[];
   trace: AgentTrace;
 }
 

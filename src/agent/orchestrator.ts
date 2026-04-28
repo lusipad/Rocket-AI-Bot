@@ -8,6 +8,7 @@ import { ToolRegistry, type ToolResult } from '../tools/registry.js';
 import type { Logger } from '../utils/logger.js';
 import type { Config } from '../config/schema.js';
 import type { RequestContext } from '../bot/message-handler.js';
+import { dedupeSources, type ToolSource } from '../tools/source.js';
 
 const MAX_TOOL_ROUNDS = 5;   // 最多 tool call 循环轮次
 const MAX_REPLY_LEN = 4000;  // 单条消息最大字符数
@@ -125,6 +126,7 @@ export interface OrchestratorTrace {
   webSearchUsed?: boolean;
   modelUsed?: string;
   modelMode?: 'normal' | 'deep';
+  sources?: ToolSource[];
 }
 
 export interface OrchestratorHandleOptions {
@@ -286,6 +288,7 @@ export class Orchestrator {
     }
 
     const usedToolNames = new Set<string>();
+    const toolSources: ToolSource[] = [];
     try {
       const directAdoUrlReply = await this.tryHandleAzureDevOpsFileUrl(
         normalizedMessage,
@@ -293,9 +296,11 @@ export class Orchestrator {
         requestContext,
         usedToolNames,
         modelMode,
+        toolSources,
       );
       if (directAdoUrlReply) {
         completeTrace(trace, [], {}, usedToolNames, 1, 'success', 'ado_url_fast_path');
+        syncTraceSources(trace, toolSources);
         return decorateReply(directAdoUrlReply, activeSkills, usedToolNames);
       }
 
@@ -380,7 +385,9 @@ export class Orchestrator {
               });
             if (toolName !== ACTIVATE_SKILL_TOOL_NAME) {
               usedToolNames.add(toolName);
+              appendToolSources(toolSources, result);
               syncTrace(trace, activeSkills, skillSources, usedToolNames, round + 1);
+              syncTraceSources(trace, toolSources);
             }
 
             context.add(
@@ -466,6 +473,7 @@ export class Orchestrator {
     requestContext: RequestContext | undefined,
     usedToolNames: Set<string>,
     modelMode: ModelModePreview,
+    toolSources: ToolSource[],
   ): Promise<string | null> {
     const fileUrl = parseAzureDevOpsFileUrl(message);
     if (!fileUrl) {
@@ -488,6 +496,7 @@ export class Orchestrator {
       requestId,
     });
     usedToolNames.add('azure_devops_server_rest');
+    appendToolSources(toolSources, toolResult);
 
     if (!toolResult.success) {
       return `读取 Azure DevOps Server 文件失败：${String(toolResult.data.error ?? '未知错误')}`;
@@ -500,7 +509,7 @@ export class Orchestrator {
 
     const reviewRequest = isReviewRequest(message);
     const baseContent = reviewRequest && shouldFetchMainBaseline(fileUrl)
-      ? await this.tryReadMainBaselineFile(fileUrl, project, requestId, requestContext, usedToolNames)
+      ? await this.tryReadMainBaselineFile(fileUrl, project, requestId, requestContext, usedToolNames, toolSources)
       : undefined;
     const numberedContent = addLineNumbers(content, 24000);
     const numberedBaseContent = baseContent ? addLineNumbers(baseContent, 16000) : undefined;
@@ -540,6 +549,7 @@ export class Orchestrator {
     requestId: string,
     requestContext: RequestContext | undefined,
     usedToolNames: Set<string>,
+    toolSources: ToolSource[],
   ): Promise<string | undefined> {
     const result = await this.registry.execute('azure_devops_server_rest', {
       method: 'GET',
@@ -557,6 +567,7 @@ export class Orchestrator {
       requestId,
     });
     usedToolNames.add('azure_devops_server_rest');
+    appendToolSources(toolSources, result);
 
     if (!result.success) {
       return undefined;
@@ -698,6 +709,7 @@ function resetTrace(trace?: OrchestratorTrace): void {
   trace.finishReason = undefined;
   trace.error = undefined;
   trace.webSearchUsed = false;
+  delete trace.sources;
   delete trace.modelUsed;
   delete trace.modelMode;
 }
@@ -826,6 +838,14 @@ function syncTrace(
   trace.skillSources = pickSkillSources(trace.activeSkills, skillSources);
   trace.usedTools = Array.from(usedToolNames);
   trace.rounds = rounds;
+}
+
+function syncTraceSources(trace: OrchestratorTrace | undefined, sources: ToolSource[]): void {
+  if (!trace || sources.length === 0) {
+    return;
+  }
+
+  trace.sources = dedupeSources(sources).slice(0, 20);
 }
 
 function completeTrace(
@@ -1120,6 +1140,12 @@ function isReviewRequest(message: string): boolean {
 function shouldFetchMainBaseline(fileUrl: AzureDevOpsFileUrl): boolean {
   const version = fileUrl.versionQuery['versionDescriptor.version'];
   return Boolean(version && version !== 'main');
+}
+
+function appendToolSources(target: ToolSource[], result: ToolResult): void {
+  if (Array.isArray(result.data.sources)) {
+    target.push(...result.data.sources);
+  }
 }
 
 const EXPLICIT_TIME_WINDOW_PATTERN = /(?:24\s*小时|过去\s*\d+\s*(?:小时|天|日)|近\s*\d+\s*(?:小时|天|日)|今天|今日|昨天|本周|本月)/i;

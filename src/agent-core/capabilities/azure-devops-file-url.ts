@@ -1,7 +1,8 @@
 import type { RequestContext } from '../../bot/message-handler.js';
 import type { Config } from '../../config/schema.js';
 import type { ChatOptions, LLMClient } from '../../llm/client.js';
-import type { ToolRegistry } from '../../tools/registry.js';
+import type { ToolRegistry, ToolResult } from '../../tools/registry.js';
+import { dedupeSources, type ToolSource } from '../../tools/source.js';
 import type { AgentCapability } from '../capabilities.js';
 import type { AgentRequest, AgentResponse } from '../types.js';
 
@@ -48,6 +49,7 @@ async function handleAzureDevOpsFileUrl(
     ?? { mode: 'normal', model: options.llm.getModel() };
   const requestContext = options.resolveRequestContext?.(request);
   const usedToolNames = new Set<string>();
+  const sources: ToolSource[] = [];
 
   try {
     const reply = await buildAzureDevOpsFileReply(
@@ -57,6 +59,7 @@ async function handleAzureDevOpsFileUrl(
       modelMode,
       requestContext,
       usedToolNames,
+      sources,
     );
 
     return buildAgentResponse({
@@ -66,6 +69,7 @@ async function handleAzureDevOpsFileUrl(
       text: decorateReply(reply, usedToolNames),
       finishReason: 'ado_url_fast_path',
       usedToolNames,
+      sources,
     });
   } catch (error) {
     return buildAgentResponse({
@@ -76,6 +80,7 @@ async function handleAzureDevOpsFileUrl(
       finishReason: 'ado_url_error',
       error: String(error),
       usedToolNames,
+      sources,
     });
   }
 }
@@ -87,6 +92,7 @@ async function buildAzureDevOpsFileReply(
   modelMode: ModelMode,
   requestContext: RequestContext | undefined,
   usedToolNames: Set<string>,
+  sources: ToolSource[],
 ): Promise<string> {
   const project = fileUrl.project
     ?? options.config.azureDevOpsServer?.project
@@ -107,6 +113,7 @@ async function buildAzureDevOpsFileReply(
     requestId: request.id,
   });
   usedToolNames.add('azure_devops_server_rest');
+  appendToolSources(sources, toolResult);
 
   if (!toolResult.success) {
     return `读取 Azure DevOps Server 文件失败：${String(toolResult.data.error ?? '未知错误')}`;
@@ -119,7 +126,7 @@ async function buildAzureDevOpsFileReply(
 
   const reviewRequest = isReviewRequest(request.input);
   const baseContent = reviewRequest && shouldFetchMainBaseline(fileUrl)
-    ? await readMainBaselineFile(fileUrl, project, request, options, requestContext, usedToolNames)
+    ? await readMainBaselineFile(fileUrl, project, request, options, requestContext, usedToolNames, sources)
     : undefined;
   const numberedContent = addLineNumbers(content, 24000);
   const numberedBaseContent = baseContent ? addLineNumbers(baseContent, 16000) : undefined;
@@ -160,6 +167,7 @@ async function readMainBaselineFile(
   options: AzureDevOpsFileUrlCapabilityOptions,
   requestContext: RequestContext | undefined,
   usedToolNames: Set<string>,
+  sources: ToolSource[],
 ): Promise<string | undefined> {
   const result = await options.registry.execute('azure_devops_server_rest', {
     method: 'GET',
@@ -177,6 +185,7 @@ async function readMainBaselineFile(
     requestId: request.id,
   });
   usedToolNames.add('azure_devops_server_rest');
+  appendToolSources(sources, result);
 
   if (!result.success) {
     return undefined;
@@ -193,8 +202,10 @@ function buildAgentResponse(input: {
   finishReason: string;
   error?: string;
   usedToolNames: Set<string>;
+  sources: ToolSource[];
 }): AgentResponse {
   const usedTools = Array.from(input.usedToolNames);
+  const sources = dedupeSources(input.sources);
   return {
     requestId: input.request.id,
     status: input.status,
@@ -204,6 +215,8 @@ function buildAgentResponse(input: {
     error: input.error,
     model: input.modelMode.model,
     modelMode: input.modelMode.mode,
+    requestType: isReviewRequest(input.request.input) ? 'ado_file_review' : 'ado_file_lookup',
+    sources,
     trace: {
       activeSkills: [],
       skillSources: {},
@@ -215,6 +228,8 @@ function buildAgentResponse(input: {
       webSearchUsed: false,
       modelUsed: input.modelMode.mode === 'deep' ? input.modelMode.model : undefined,
       modelMode: input.modelMode.mode,
+      requestType: isReviewRequest(input.request.input) ? 'ado_file_review' : 'ado_file_lookup',
+      sources,
     },
   };
 }
@@ -354,4 +369,10 @@ function isReviewRequest(message: string): boolean {
 function shouldFetchMainBaseline(fileUrl: AzureDevOpsFileUrl): boolean {
   const version = fileUrl.versionQuery['versionDescriptor.version'];
   return Boolean(version && version !== 'main');
+}
+
+function appendToolSources(target: ToolSource[], result: ToolResult): void {
+  if (Array.isArray(result.data.sources)) {
+    target.push(...result.data.sources);
+  }
 }

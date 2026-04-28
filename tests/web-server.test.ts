@@ -349,6 +349,11 @@ test('skills 接口应返回已装载列表并支持切换启用状态', async (
         chat: 0,
         scheduler: 0,
       },
+      byRequestType: {},
+      sourceCoverage: {
+        withSources: 0,
+        sourceRate: 0,
+      },
     });
   });
 
@@ -517,10 +522,32 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     roomType: 'c',
     prompt: '帮我总结',
     reply: '总结好了',
+    requestType: 'discussion',
     activeSkills: ['artifact-writer'],
     skillSources: { 'artifact-writer': 'explicit' },
     usedTools: ['room_history'],
     rounds: 2,
+    sources: [{ type: 'chat', title: 'GENERAL', ref: 'room:GENERAL' }],
+  });
+  requestLogStore.record({
+    requestId: 'req-code-1',
+    kind: 'chat',
+    status: 'success',
+    finishReason: 'reply',
+    model: 'gpt-4',
+    startedAt: '2026-04-26T08:30:00.000Z',
+    finishedAt: '2026-04-26T08:30:01.000Z',
+    durationMs: 1000,
+    username: 'bob',
+    roomId: 'GENERAL',
+    prompt: '看下 src/index.ts',
+    reply: '入口在 src/index.ts',
+    requestType: 'code_query',
+    activeSkills: ['code-lookup'],
+    skillSources: { 'code-lookup': 'explicit' },
+    usedTools: ['read_file'],
+    rounds: 1,
+    sources: [{ type: 'file', title: 'src/index.ts', ref: 'src/index.ts:1' }],
   });
   requestLogStore.record({
     requestId: 'req-scheduler-1',
@@ -535,6 +562,7 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     roomId: 'general',
     taskName: 'daily-news',
     prompt: '搜索新闻',
+    requestType: 'scheduler',
     error: 'AI 服务暂时不可用',
     activeSkills: ['scheduled-report'],
     skillSources: { 'scheduled-report': 'system' },
@@ -543,7 +571,7 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
   });
 
   await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
-    const listResponse = await fetch(`${baseUrl}/api/requests?kind=chat`, {
+    const listResponse = await fetch(`${baseUrl}/api/requests?kind=chat&username=alice`, {
       headers: {
         Authorization: 'Bearer secret-token',
       },
@@ -552,6 +580,17 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     const list = await listResponse.json();
     assert.equal(list.length, 1);
     assert.equal(list[0].requestId, 'req-chat-1');
+    assert.equal(list[0].requestType, 'discussion');
+    assert.deepEqual(list[0].sources, [{ type: 'chat', title: 'GENERAL', ref: 'room:GENERAL' }]);
+
+    const typeFilterResponse = await fetch(`${baseUrl}/api/requests?requestType=discussion`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(typeFilterResponse.status, 200);
+    const typeFiltered = await typeFilterResponse.json();
+    assert.deepEqual(typeFiltered.map((entry: { requestId: string }) => entry.requestId), ['req-chat-1']);
 
     const detailResponse = await fetch(`${baseUrl}/api/requests/req-scheduler-1`, {
       headers: {
@@ -571,13 +610,46 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     assert.equal(summaryResponse.status, 200);
     const summary = await summaryResponse.json();
     assert.deepEqual(summary, {
-      total: 2,
-      success: 1,
+      total: 3,
+      success: 2,
       error: 1,
       rejected: 0,
       byKind: {
-        chat: 1,
+        chat: 2,
         scheduler: 1,
+      },
+      byRequestType: {
+        code_query: 1,
+        discussion: 1,
+        scheduler: 1,
+      },
+      sourceCoverage: {
+        withSources: 2,
+        sourceRate: 0.667,
+      },
+      lastFinishedAt: '2026-04-26T09:00:05.000Z',
+    });
+
+    const metricsResponse = await fetch(`${baseUrl}/api/requests/metrics/devtools`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(metricsResponse.status, 200);
+    const metrics = await metricsResponse.json();
+    assert.deepEqual(metrics, {
+      total: 3,
+      devToolsTotal: 1,
+      devToolsRate: 0.333,
+      byRequestType: {
+        code_query: 1,
+      },
+      byTool: {
+        read_file: 1,
+      },
+      sourceCoverage: {
+        withSources: 1,
+        sourceRate: 1,
       },
       lastFinishedAt: '2026-04-26T09:00:05.000Z',
     });

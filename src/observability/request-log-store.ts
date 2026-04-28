@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir } from '../utils/helpers.js';
+import { isAgentRequestType } from '../agent-core/classification.js';
+import type { AgentRequestType } from '../agent-core/types.js';
+import { dedupeSources, type ToolSource } from '../tools/source.js';
 
 export type RequestLogKind = 'chat' | 'scheduler';
 export type RequestLogStatus = 'success' | 'error' | 'rejected';
@@ -28,6 +31,7 @@ export interface RequestLogEntry {
   kind: RequestLogKind;
   status: RequestLogStatus;
   finishReason?: string;
+  requestType?: AgentRequestType;
   model: string;
   startedAt: string;
   finishedAt: string;
@@ -46,12 +50,14 @@ export interface RequestLogEntry {
   skillSources: Record<string, RequestLogSkillSource>;
   usedTools: string[];
   rounds: number;
+  sources?: ToolSource[];
   context?: RequestLogContext;
 }
 
 export interface RequestLogQuery {
   kind?: RequestLogKind;
   status?: RequestLogStatus;
+  requestType?: AgentRequestType;
   username?: string;
   roomId?: string;
   taskName?: string;
@@ -64,10 +70,36 @@ export interface RequestLogSummary {
   error: number;
   rejected: number;
   byKind: Record<RequestLogKind, number>;
+  byRequestType: Partial<Record<AgentRequestType, number>>;
+  sourceCoverage: {
+    withSources: number;
+    sourceRate: number;
+  };
+  lastFinishedAt?: string;
+}
+
+export interface RequestLogDevToolsMetrics {
+  total: number;
+  devToolsTotal: number;
+  devToolsRate: number;
+  byRequestType: Partial<Record<AgentRequestType, number>>;
+  byTool: Record<string, number>;
+  sourceCoverage: {
+    withSources: number;
+    sourceRate: number;
+  };
   lastFinishedAt?: string;
 }
 
 const DEFAULT_LIST_LIMIT = 50;
+const DEVTOOLS_REQUEST_TYPES = new Set<AgentRequestType>([
+  'code_query',
+  'ado_query',
+  'ado_file_review',
+  'ado_file_lookup',
+  'pr_review',
+  'pipeline_monitor',
+]);
 
 export class RequestLogStore {
   private historyDir: string;
@@ -132,6 +164,11 @@ export class RequestLogStore {
         chat: 0,
         scheduler: 0,
       },
+      byRequestType: {},
+      sourceCoverage: {
+        withSources: 0,
+        sourceRate: 0,
+      },
       lastFinishedAt: entries[0]?.finishedAt,
     };
 
@@ -148,9 +185,52 @@ export class RequestLogStore {
           break;
       }
       summary.byKind[entry.kind] += 1;
+      if (entry.requestType) {
+        summary.byRequestType[entry.requestType] = (summary.byRequestType[entry.requestType] ?? 0) + 1;
+      }
+      if ((entry.sources?.length ?? 0) > 0) {
+        summary.sourceCoverage.withSources += 1;
+      }
     }
+    summary.sourceCoverage.sourceRate = summary.total === 0
+      ? 0
+      : roundRate(summary.sourceCoverage.withSources / summary.total);
 
     return summary;
+  }
+
+  summarizeDevTools(limit = 200): RequestLogDevToolsMetrics {
+    const entries = this.list({ limit });
+    const devToolsEntries = entries.filter(isDevToolsEntry);
+    const metrics: RequestLogDevToolsMetrics = {
+      total: entries.length,
+      devToolsTotal: devToolsEntries.length,
+      devToolsRate: entries.length === 0 ? 0 : roundRate(devToolsEntries.length / entries.length),
+      byRequestType: {},
+      byTool: {},
+      sourceCoverage: {
+        withSources: 0,
+        sourceRate: 0,
+      },
+      lastFinishedAt: entries[0]?.finishedAt,
+    };
+
+    for (const entry of devToolsEntries) {
+      if (entry.requestType) {
+        metrics.byRequestType[entry.requestType] = (metrics.byRequestType[entry.requestType] ?? 0) + 1;
+      }
+      for (const tool of entry.usedTools) {
+        metrics.byTool[tool] = (metrics.byTool[tool] ?? 0) + 1;
+      }
+      if ((entry.sources?.length ?? 0) > 0) {
+        metrics.sourceCoverage.withSources += 1;
+      }
+    }
+    metrics.sourceCoverage.sourceRate = devToolsEntries.length === 0
+      ? 0
+      : roundRate(metrics.sourceCoverage.withSources / devToolsEntries.length);
+
+    return metrics;
   }
 
   private getSortedFiles(): string[] {
@@ -178,6 +258,10 @@ function matchesQuery(entry: RequestLogEntry, query: RequestLogQuery): boolean {
     return false;
   }
 
+  if (query.requestType && entry.requestType !== query.requestType) {
+    return false;
+  }
+
   if (query.username && entry.username !== query.username) {
     return false;
   }
@@ -193,6 +277,22 @@ function matchesQuery(entry: RequestLogEntry, query: RequestLogQuery): boolean {
   return true;
 }
 
+function isDevToolsEntry(entry: RequestLogEntry): boolean {
+  return Boolean(
+    (entry.requestType && DEVTOOLS_REQUEST_TYPES.has(entry.requestType))
+    || entry.usedTools.some((tool) => (
+      tool === 'search_code'
+      || tool === 'read_file'
+      || tool === 'azure_devops'
+      || tool === 'azure_devops_server_rest'
+    )),
+  );
+}
+
+function roundRate(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
 function normalizeEntry(entry: RequestLogEntry): RequestLogEntry {
   const activeSkills = dedupe(entry.activeSkills);
   return {
@@ -200,11 +300,13 @@ function normalizeEntry(entry: RequestLogEntry): RequestLogEntry {
     prompt: truncateRequired(entry.prompt, 4000),
     reply: truncate(entry.reply, 4000),
     error: truncate(entry.error, 2000),
+    requestType: isAgentRequestType(entry.requestType) ? entry.requestType : undefined,
     activeSkills,
     skillSources: normalizeSkillSources(entry.skillSources, activeSkills),
     usedTools: dedupe(entry.usedTools),
     rounds: Math.max(0, entry.rounds),
     durationMs: Math.max(0, Math.round(entry.durationMs)),
+    sources: normalizeSources(entry.sources),
     context: normalizeContext(entry.context),
   };
 }
@@ -223,6 +325,28 @@ function truncateRequired(value: string, maxLength: number): string {
 
 function dedupe(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function normalizeSources(sources: ToolSource[] | undefined): ToolSource[] {
+  if (!Array.isArray(sources)) {
+    return [];
+  }
+
+  const normalized = sources
+    .filter((source) => source && typeof source === 'object')
+    .map((source) => ({
+      type: source.type,
+      title: truncateRequired(String(source.title ?? source.ref ?? ''), 200),
+      ref: truncateRequired(String(source.ref ?? ''), 300),
+      ...(source.url ? { url: truncateRequired(String(source.url), 500) } : {}),
+    }))
+    .filter((source): source is ToolSource => (
+      (source.type === 'file' || source.type === 'azure_devops' || source.type === 'web' || source.type === 'chat')
+      && Boolean(source.title)
+      && Boolean(source.ref)
+    ));
+
+  return dedupeSources(normalized).slice(0, 20);
 }
 
 function normalizeSkillSources(

@@ -33,6 +33,7 @@ test('AgentRuntime 应通过通用 AgentRequest 调用现有 Orchestrator', asyn
         options.trace.status = 'success';
         options.trace.finishReason = 'reply';
         options.trace.modelMode = 'normal';
+        options.trace.sources = [{ type: 'file', title: 'src/index.ts', ref: 'src/index.ts:10' }];
       }
       return 'ok';
     },
@@ -67,6 +68,8 @@ test('AgentRuntime 应通过通用 AgentRequest 调用现有 Orchestrator', asyn
   assert.equal(response.text, 'ok');
   assert.equal(response.model, 'gpt-5.5');
   assert.equal(response.finishReason, 'reply');
+  assert.equal(response.requestType, 'code_query');
+  assert.deepEqual(response.sources, [{ type: 'file', title: 'src/index.ts', ref: 'src/index.ts:10' }]);
   assert.deepEqual(response.trace.activeSkills, ['code-lookup']);
   assert.deepEqual(response.trace.usedTools, ['read_file']);
   assert.deepEqual(captured.handle, {
@@ -231,6 +234,7 @@ test('公开实时查询 capability 应在 AgentRuntime 中绕过 legacy Orchest
   assert.equal(orchestratorCalled, false);
   assert.equal(response.text, '1. OpenAI 发布更新：<https://openai.com/news/>');
   assert.equal(response.finishReason, 'web_search_fast_path');
+  assert.equal(response.requestType, 'public_realtime');
   assert.equal(response.model, 'gpt-5.5');
   assert.equal(response.trace.webSearchUsed, true);
   assert.equal(response.trace.rounds, 1);
@@ -335,6 +339,11 @@ test('Azure DevOps 文件 URL capability 应在 AgentRuntime 中走只读 review
               ? 'const value = 0;'
               : 'const value = 1;\nconsole.log(value);',
           },
+          sources: [{
+            type: 'azure_devops',
+            title: String(version),
+            ref: `GET git/repositories/test/items:${String(version)}`,
+          }],
         },
       };
     },
@@ -368,7 +377,17 @@ test('Azure DevOps 文件 URL capability 应在 AgentRuntime 中走只读 review
   assert.equal(orchestratorCalled, false);
   assert.equal(response.text, '已使用工具: azure_devops_server_rest\n\n没有发现明确问题。');
   assert.equal(response.finishReason, 'ado_url_fast_path');
+  assert.equal(response.requestType, 'ado_file_review');
   assert.deepEqual(response.trace.usedTools, ['azure_devops_server_rest']);
+  assert.deepEqual(response.sources, [{
+    type: 'azure_devops',
+    title: 'feature/codex-skill-pr-smoke-20260411-165356',
+    ref: 'GET git/repositories/test/items:feature/codex-skill-pr-smoke-20260411-165356',
+  }, {
+    type: 'azure_devops',
+    title: 'main',
+    ref: 'GET git/repositories/test/items:main',
+  }]);
   assert.equal(toolCalls.length, 2);
   assert.deepEqual(toolCalls[0].params, {
     method: 'GET',

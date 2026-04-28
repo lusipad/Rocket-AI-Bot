@@ -9,6 +9,8 @@ import type {
   AgentTrace,
 } from './types.js';
 import { CapabilityRegistry, RequestRouter } from './capabilities.js';
+import { classifyAgentInteraction } from './classification.js';
+import { dedupeSources } from '../tools/source.js';
 
 export class AgentRuntime {
   private readonly router: RequestRouter;
@@ -41,7 +43,8 @@ export class AgentRuntime {
   }
 
   async handle(request: AgentRequest): Promise<AgentResponse> {
-    return this.router.handle(request);
+    const response = await this.router.handle(request);
+    return annotateResponse(request, response);
   }
 
   private async handleWithOrchestrator(request: AgentRequest): Promise<AgentResponse> {
@@ -115,5 +118,25 @@ function toAgentTrace(trace: OrchestratorTrace): AgentTrace {
     webSearchUsed: trace.webSearchUsed,
     modelUsed: trace.modelUsed,
     modelMode: trace.modelMode,
+    sources: trace.sources,
+  };
+}
+
+function annotateResponse(request: AgentRequest, response: AgentResponse): AgentResponse {
+  const requestType = classifyAgentInteraction(request, response);
+  const sources = dedupeSources([
+    ...(response.sources ?? []),
+    ...(response.trace.sources ?? []),
+  ]);
+
+  return {
+    ...response,
+    requestType,
+    sources,
+    trace: {
+      ...response.trace,
+      requestType,
+      sources,
+    },
   };
 }
