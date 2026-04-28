@@ -14,7 +14,9 @@ import {
   Orchestrator,
   type ModelModePreview,
 } from './agent/orchestrator.js';
-import { AgentRuntime } from './agent-core/runtime.js';
+import { AgentRuntime, toRequestContext } from './agent-core/runtime.js';
+import { createPublicRealtimeWebSearchCapability } from './agent-core/capabilities/public-realtime-web-search.js';
+import { createAzureDevOpsFileUrlCapability } from './agent-core/capabilities/azure-devops-file-url.js';
 import type { AgentConversationMessage, AgentResponse, AgentTrace } from './agent-core/types.js';
 import { toRocketChatAgentRequest, toSchedulerAgentRequest } from './adapters/rocketchat/message-normalizer.js';
 import { renderRocketChatReply } from './adapters/rocketchat/reply-renderer.js';
@@ -146,7 +148,28 @@ async function main() {
   const llm = new LLMClient(config, logger);
   const skillRegistry = new SkillRegistry(undefined, logger);
   const orchestrator = new Orchestrator(llm, registry, config, logger, skillRegistry);
-  const agentRuntime = new AgentRuntime(orchestrator, llm);
+  const agentRuntime = new AgentRuntime(orchestrator, llm, [
+    createAzureDevOpsFileUrlCapability({
+      config,
+      llm,
+      registry,
+      resolveModelMode: (request) => orchestrator.previewModelMode(
+        request.actor.id,
+        request.input,
+        toRequestContext(request),
+      ),
+      resolveRequestContext: toRequestContext,
+    }),
+    createPublicRealtimeWebSearchCapability({
+      config,
+      llm,
+      resolveModelMode: (request) => orchestrator.previewModelMode(
+        request.actor.id,
+        request.input,
+        toRequestContext(request),
+      ),
+    }),
+  ]);
   const requestLogStore = new RequestLogStore();
   const discussionSummaryStore = new DiscussionSummaryStore();
   const discussionSummaryService = new DiscussionSummaryService(discussionSummaryStore);

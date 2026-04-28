@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentRuntime } from '../src/agent-core/runtime.ts';
 import { CapabilityRegistry } from '../src/agent-core/capabilities.ts';
+import { createAzureDevOpsFileUrlCapability } from '../src/agent-core/capabilities/azure-devops-file-url.ts';
+import { createPublicRealtimeWebSearchCapability } from '../src/agent-core/capabilities/public-realtime-web-search.ts';
 import { toRocketChatAgentRequest, toSchedulerAgentRequest } from '../src/adapters/rocketchat/message-normalizer.ts';
 import type { BotMessage } from '../src/bot/message-handler.ts';
 import type { OrchestratorTrace } from '../src/agent/orchestrator.ts';
@@ -197,3 +199,256 @@ test('scheduler adapter 应复用同一个 AgentRequest 协议', () => {
   assert.deepEqual(request.actor, { id: 'scheduler', username: '系统', kind: 'system' });
   assert.deepEqual(request.channel, { kind: 'scheduler', roomId: 'general' });
 });
+
+test('公开实时查询 capability 应在 AgentRuntime 中绕过 legacy Orchestrator', async () => {
+  let orchestratorCalled = false;
+  const llm = new FakeWebSearchLLM('1. OpenAI 发布更新：<https://openai.com/news/>');
+  const runtime = new AgentRuntime(
+    {
+      previewModelMode() {
+        return { mode: 'normal', model: 'gpt-5.5' };
+      },
+      async handle() {
+        orchestratorCalled = true;
+        return 'fallback';
+      },
+    } as never,
+    llm as never,
+    [createPublicRealtimeWebSearchCapability({
+      config: createWebSearchConfig(),
+      llm: llm as never,
+      resolveModelMode: () => ({ mode: 'normal', model: 'gpt-5.5' }),
+    })],
+  );
+
+  const response = await runtime.handle({
+    id: 'req-news',
+    input: '@RocketBot 24小时内的AI新闻',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(orchestratorCalled, false);
+  assert.equal(response.text, '1. OpenAI 发布更新：<https://openai.com/news/>');
+  assert.equal(response.finishReason, 'web_search_fast_path');
+  assert.equal(response.model, 'gpt-5.5');
+  assert.equal(response.trace.webSearchUsed, true);
+  assert.equal(response.trace.rounds, 1);
+  assert.equal(llm.calls.length, 1);
+  assert.equal(llm.calls[0].options?.apiMode, 'responses');
+  assert.deepEqual(llm.calls[0].tools, []);
+  assert.match(String(llm.calls[0].messages[0].content), /公开互联网实时信息查询/);
+});
+
+test('公开实时查询 capability 不应接管项目内版本问题', async () => {
+  let orchestratorCalled = false;
+  const llm = new FakeWebSearchLLM('should not be used');
+  const runtime = new AgentRuntime(
+    {
+      previewModelMode() {
+        return { mode: 'normal', model: 'gpt-5.5' };
+      },
+      async handle(
+        _userId: string,
+        _username: string,
+        _message: string,
+        _conversation: unknown[],
+        _images: string[],
+        _requestContext: unknown,
+        options: { trace?: OrchestratorTrace },
+      ) {
+        orchestratorCalled = true;
+        if (options.trace) {
+          options.trace.status = 'success';
+          options.trace.finishReason = 'reply';
+          options.trace.rounds = 1;
+        }
+        return '按当前版本边界回答。';
+      },
+    } as never,
+    llm as never,
+    [createPublicRealtimeWebSearchCapability({
+      config: createWebSearchConfig(),
+      llm: llm as never,
+      resolveModelMode: () => ({ mode: 'normal', model: 'gpt-5.5' }),
+    })],
+  );
+
+  const response = await runtime.handle({
+    id: 'req-version',
+    input: '@RocketBot 这个版本支持 main 分支吗',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(orchestratorCalled, true);
+  assert.equal(llm.calls.length, 0);
+  assert.equal(response.text, '按当前版本边界回答。');
+  assert.equal(response.finishReason, 'reply');
+});
+
+test('公开实时查询 capability 应识别上游未联网回复', async () => {
+  const llm = new FakeWebSearchLLM('我无法联网搜索实时新闻。', false);
+  const runtime = new AgentRuntime(
+    {
+      previewModelMode() {
+        return { mode: 'normal', model: 'gpt-5.5' };
+      },
+      async handle() {
+        return 'fallback';
+      },
+    } as never,
+    llm as never,
+    [createPublicRealtimeWebSearchCapability({
+      config: createWebSearchConfig(),
+      llm: llm as never,
+      resolveModelMode: () => ({ mode: 'normal', model: 'gpt-5.5' }),
+    })],
+  );
+
+  const response = await runtime.handle({
+    id: 'req-unavailable',
+    input: '今天的AI新闻',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'cli' },
+  });
+
+  assert.equal(response.status, 'error');
+  assert.equal(response.finishReason, 'web_search_unavailable');
+  assert.equal(response.trace.webSearchUsed, false);
+  assert.match(response.text, /上游模型没有返回可用的联网搜索结果/);
+});
+
+test('Azure DevOps 文件 URL capability 应在 AgentRuntime 中走只读 review 快路径', async () => {
+  let orchestratorCalled = false;
+  const llm = new FakeWebSearchLLM('没有发现明确问题。');
+  const toolCalls: Array<{ name: string; params: Record<string, unknown> }> = [];
+  const registry = {
+    async execute(name: string, params: Record<string, unknown>) {
+      toolCalls.push({ name, params });
+      const version = (params.query as Record<string, unknown> | undefined)?.['versionDescriptor.version'];
+      return {
+        success: true,
+        data: {
+          result: {
+            content: version === 'main'
+              ? 'const value = 0;'
+              : 'const value = 1;\nconsole.log(value);',
+          },
+        },
+      };
+    },
+  };
+  const runtime = new AgentRuntime(
+    {
+      previewModelMode() {
+        return { mode: 'normal', model: 'gpt-5.5' };
+      },
+      async handle() {
+        orchestratorCalled = true;
+        return 'fallback';
+      },
+    } as never,
+    llm as never,
+    [createAzureDevOpsFileUrlCapability({
+      config: createWebSearchConfig(),
+      llm: llm as never,
+      registry: registry as never,
+      resolveModelMode: () => ({ mode: 'normal', model: 'gpt-5.5' }),
+    })],
+  );
+
+  const response = await runtime.handle({
+    id: 'req-ado',
+    input: 'http://localhost:8081/DefaultCollection/_git/test?path=/codex-skill-smoke.txt&version=GBfeature/codex-skill-pr-smoke-20260411-165356&_a=contents review下',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(orchestratorCalled, false);
+  assert.equal(response.text, '已使用工具: azure_devops_server_rest\n\n没有发现明确问题。');
+  assert.equal(response.finishReason, 'ado_url_fast_path');
+  assert.deepEqual(response.trace.usedTools, ['azure_devops_server_rest']);
+  assert.equal(toolCalls.length, 2);
+  assert.deepEqual(toolCalls[0].params, {
+    method: 'GET',
+    area: 'git',
+    project: 'test',
+    resource: 'repositories/test/items',
+    query: {
+      path: '/codex-skill-smoke.txt',
+      includeContent: 'true',
+      'versionDescriptor.version': 'feature/codex-skill-pr-smoke-20260411-165356',
+      'versionDescriptor.versionType': 'branch',
+    },
+  });
+  assert.deepEqual(toolCalls[1].params, {
+    method: 'GET',
+    area: 'git',
+    project: 'test',
+    resource: 'repositories/test/items',
+    query: {
+      path: '/codex-skill-smoke.txt',
+      includeContent: 'true',
+      'versionDescriptor.version': 'main',
+      'versionDescriptor.versionType': 'branch',
+    },
+  });
+  assert.equal(llm.calls.length, 1);
+  assert.match(String(llm.calls[0].messages[1].content), /main 基线内容/);
+  assert.match(String(llm.calls[0].messages[1].content), /1: const value = 0;/);
+  assert.match(String(llm.calls[0].messages[1].content), /1: const value = 1;/);
+  assert.match(String(llm.calls[0].messages[1].content), /版本: feature\/codex-skill-pr-smoke-20260411-165356/);
+});
+
+function createWebSearchConfig() {
+  return {
+    llm: {
+      model: 'gpt-5.5',
+      apiMode: 'chat_completions',
+      nativeWebSearch: {
+        enabled: true,
+        tools: [{ type: 'web_search' }],
+        requestBody: { tool_choice: 'auto' },
+      },
+    },
+  } as never;
+}
+
+class FakeWebSearchLLM {
+  public readonly calls: Array<{
+    messages: Array<{ role: string; content: unknown }>;
+    tools: unknown[];
+    options: { apiMode?: string; model?: string } | undefined;
+  }> = [];
+
+  constructor(
+    private readonly reply: string,
+    private readonly webSearchUsed = true,
+  ) {}
+
+  getModel() {
+    return 'gpt-5.5';
+  }
+
+  async chat(
+    messages: Array<{ role: string; content: unknown }>,
+    tools: unknown[] = [],
+    options?: { apiMode?: string; model?: string },
+  ) {
+    this.calls.push({ messages, tools, options });
+    return Object.assign({
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        logprobs: null,
+        message: {
+          role: 'assistant',
+          content: this.reply,
+        },
+      }],
+    }, {
+      __rocketbotMeta: { webSearchUsed: this.webSearchUsed },
+    });
+  }
+}

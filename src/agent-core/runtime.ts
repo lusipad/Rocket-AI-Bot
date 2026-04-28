@@ -84,7 +84,7 @@ function createTrace(): OrchestratorTrace {
   };
 }
 
-function toRequestContext(request: AgentRequest): RequestContext | undefined {
+export function toRequestContext(request: AgentRequest): RequestContext | undefined {
   if (!request.channel.roomId || !request.metadata?.triggerMessageId || !request.metadata.timestamp) {
     return undefined;
   }
