@@ -13,9 +13,6 @@ export function classifyAgentInteraction(
   const skills = new Set(response?.trace.activeSkills ?? []);
   const input = request.input;
 
-  if (request.channel.kind === 'scheduler' || request.actor.kind === 'system') {
-    return 'scheduler';
-  }
   if (isCommand(input) || isCommandFinishReason(finishReason)) {
     return 'command';
   }
@@ -35,7 +32,13 @@ export function classifyAgentInteraction(
     if (isPipelineRequest(input)) {
       return 'pipeline_monitor';
     }
+    if (isWorkItemRequest(input)) {
+      return 'work_item_report';
+    }
     return 'ado_query';
+  }
+  if (request.channel.kind === 'scheduler' || request.actor.kind === 'system') {
+    return 'scheduler';
   }
   if (isDiscussionRequest(input, request.conversation?.length ?? 0)) {
     return 'discussion';
@@ -57,6 +60,7 @@ const REQUEST_TYPES: AgentRequestType[] = [
   'ado_query',
   'pr_review',
   'pipeline_monitor',
+  'work_item_report',
   'discussion',
   'scheduler',
   'general',
@@ -85,6 +89,10 @@ function isPrReviewRequest(input: string): boolean {
 
 function isPipelineRequest(input: string): boolean {
   return /pipeline|构建|build|ci|部署|release/i.test(input);
+}
+
+function isWorkItemRequest(input: string): boolean {
+  return /work\s*item|工作项|bug|task|user\s*story|需求|阻塞|超期|负责人|风险/i.test(input);
 }
 
 function isDiscussionRequest(input: string, conversationLength: number): boolean {

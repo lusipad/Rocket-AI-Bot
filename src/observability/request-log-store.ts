@@ -100,6 +100,7 @@ const DEVTOOLS_REQUEST_TYPES = new Set<AgentRequestType>([
   'ado_file_lookup',
   'pr_review',
   'pipeline_monitor',
+  'work_item_report',
 ]);
 
 export class RequestLogStore {

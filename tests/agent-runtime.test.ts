@@ -203,6 +203,78 @@ test('scheduler adapter 应复用同一个 AgentRequest 协议', () => {
   assert.deepEqual(request.channel, { kind: 'scheduler', roomId: 'general' });
 });
 
+test('AgentRuntime 应按工具和内容细分 scheduler DevTools 请求类型', async () => {
+  const runtime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-5.5' };
+    },
+    async handle(
+      _userId: string,
+      _username: string,
+      _message: string,
+      _conversation: unknown[],
+      _images: string[],
+      _requestContext: unknown,
+      options: { trace?: OrchestratorTrace },
+    ) {
+      if (options.trace) {
+        options.trace.status = 'success';
+        options.trace.finishReason = 'reply';
+        options.trace.rounds = 1;
+        options.trace.usedTools = ['azure_devops_server_rest'];
+      }
+      return 'pipeline ok';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-5.5';
+    },
+  } as never);
+
+  const response = await runtime.handle(
+    toSchedulerAgentRequest('req-pipeline', '检查 main 分支最近的 pipeline/build 状态', 'DEVTOOLS'),
+  );
+
+  assert.equal(response.requestType, 'pipeline_monitor');
+  assert.equal(response.trace.requestType, 'pipeline_monitor');
+});
+
+test('AgentRuntime 应识别 scheduler 工作项风险报告', async () => {
+  const runtime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-5.5' };
+    },
+    async handle(
+      _userId: string,
+      _username: string,
+      _message: string,
+      _conversation: unknown[],
+      _images: string[],
+      _requestContext: unknown,
+      options: { trace?: OrchestratorTrace },
+    ) {
+      if (options.trace) {
+        options.trace.status = 'success';
+        options.trace.finishReason = 'reply';
+        options.trace.rounds = 1;
+        options.trace.usedTools = ['azure_devops_server_rest'];
+      }
+      return 'work items ok';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-5.5';
+    },
+  } as never);
+
+  const response = await runtime.handle(
+    toSchedulerAgentRequest('req-work-items', '读取工作项并汇总阻塞、超期和负责人风险', 'DEVTOOLS'),
+  );
+
+  assert.equal(response.requestType, 'work_item_report');
+  assert.equal(response.trace.requestType, 'work_item_report');
+});
+
 test('公开实时查询 capability 应在 AgentRuntime 中绕过 legacy Orchestrator', async () => {
   let orchestratorCalled = false;
   const llm = new FakeWebSearchLLM('1. OpenAI 发布更新：<https://openai.com/news/>');

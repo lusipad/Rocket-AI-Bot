@@ -52,6 +52,7 @@ export type AgentRequestType =
   | 'ado_query'
   | 'pr_review'
   | 'pipeline_monitor'
+  | 'work_item_report'
   | 'discussion'
   | 'scheduler'
   | 'general';
