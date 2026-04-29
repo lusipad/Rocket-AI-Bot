@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   getTasks,
   getTaskTemplates,
@@ -9,6 +10,7 @@ import {
   updateTask,
   type Task,
   type TaskTemplate,
+  type TaskRunResult,
 } from '../api/client';
 
 const EMPTY_FORM: Task = {
@@ -26,6 +28,7 @@ export default function Tasks() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [form, setForm] = useState<Task>(EMPTY_FORM);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [runResults, setRunResults] = useState<Record<string, TaskRunResult>>({});
 
   async function load() {
     try {
@@ -66,7 +69,8 @@ export default function Tasks() {
 
   async function handleRun(name: string) {
     const r = await runTask(name);
-    alert(r.success ? '执行成功' : r.error);
+    setRunResults(results => ({ ...results, [name]: r }));
+    alert(r.success ? '执行成功' : (r.error ?? '执行失败'));
     load();
   }
 
@@ -206,24 +210,32 @@ export default function Tasks() {
         <table>
           <thead><tr><th>名称</th><th>来源</th><th>任务内容</th><th>Cron</th><th>频道</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>
-            {tasks.map(t => (
-              <tr key={t.name}>
-                <td>{t.name}</td>
-                <td>{t.templateId ? <code>{t.templateId}</code> : '自定义'}</td>
-                <td style={{maxWidth:320,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={t.prompt}>
-                  {t.prompt}
-                </td>
-                <td><code>{t.cron}</code></td>
-                <td>{t.room}</td>
-                <td><span className={`badge ${t.enabled ? 'ok' : 'warn'}`}>{t.enabled ? '启用' : '禁用'}</span></td>
-                <td className="flex">
-                  <button className="sm" onClick={() => handleEdit(t)}>编辑</button>
-                  <button className="sm" onClick={() => handleToggle(t)}>{t.enabled ? '禁用' : '启用'}</button>
-                  <button className="sm" onClick={() => handleRun(t.name)}>执行</button>
-                  <button className="sm danger" onClick={() => handleDelete(t.name)}>删除</button>
-                </td>
-              </tr>
-            ))}
+            {tasks.map(t => {
+              const runRequestId = runResults[t.name]?.requestId;
+              return (
+                <tr key={t.name}>
+                  <td>{t.name}</td>
+                  <td>{t.templateId ? <code>{t.templateId}</code> : '自定义'}</td>
+                  <td style={{maxWidth:320,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={t.prompt}>
+                    {t.prompt}
+                  </td>
+                  <td><code>{t.cron}</code></td>
+                  <td>{t.room}</td>
+                  <td><span className={`badge ${t.enabled ? 'ok' : 'warn'}`}>{t.enabled ? '启用' : '禁用'}</span></td>
+                  <td className="flex">
+                    <button className="sm" onClick={() => handleEdit(t)}>编辑</button>
+                    <button className="sm" onClick={() => handleToggle(t)}>{t.enabled ? '禁用' : '启用'}</button>
+                    <button className="sm" onClick={() => handleRun(t.name)}>执行</button>
+                    {runRequestId && (
+                      <Link to={`/requests?requestId=${encodeURIComponent(runRequestId)}`} style={{fontSize:12}}>
+                        请求日志
+                      </Link>
+                    )}
+                    <button className="sm danger" onClick={() => handleDelete(t.name)}>删除</button>
+                  </td>
+                </tr>
+              );
+            })}
             {tasks.length === 0 && <tr><td colSpan={7} style={{color:'#999'}}>暂无任务</td></tr>}
           </tbody>
         </table>

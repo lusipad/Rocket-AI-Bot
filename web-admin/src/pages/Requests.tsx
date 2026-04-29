@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { getRequest, getRequests, type RequestLog } from '../api/client';
 
 type KindFilter = '' | 'chat' | 'scheduler';
@@ -10,6 +11,7 @@ export default function Requests() {
   const [kind, setKind] = useState<KindFilter>('');
   const [status, setStatus] = useState<StatusFilter>('');
   const [loading, setLoading] = useState(false);
+  const [searchParams] = useSearchParams();
 
   async function load() {
     setLoading(true);
@@ -40,6 +42,13 @@ export default function Requests() {
   useEffect(() => {
     load().catch(console.error);
   }, [kind, status]);
+
+  useEffect(() => {
+    const requestId = searchParams.get('requestId');
+    if (requestId) {
+      openDetail(requestId).catch(console.error);
+    }
+  }, [searchParams]);
 
   function formatSkillSources(item: RequestLog): string {
     if (item.activeSkills.length === 0) {
@@ -78,6 +87,7 @@ export default function Requests() {
               <th>状态</th>
               <th>用户/任务</th>
               <th>房间</th>
+              <th>请求类型</th>
               <th>模式</th>
               <th>耗时</th>
               <th>Skills</th>
@@ -97,6 +107,7 @@ export default function Requests() {
                 </td>
                 <td>{item.kind === 'chat' ? (item.username ?? '-') : (item.taskName ?? '-')}</td>
                 <td>{item.roomId ?? '-'}</td>
+                <td>{item.requestType ?? '-'}</td>
                 <td>
                   <span className={`badge ${item.context?.modelMode === 'deep' ? 'warn' : 'ok'}`}>
                     {item.context?.modelMode === 'deep' ? '深度' : '普通'}
@@ -112,7 +123,7 @@ export default function Requests() {
             ))}
             {requests.length === 0 && (
               <tr>
-                <td colSpan={10} style={{color: '#999'}}>暂无请求记录</td>
+                <td colSpan={11} style={{color: '#999'}}>暂无请求记录</td>
               </tr>
             )}
           </tbody>
@@ -128,16 +139,28 @@ export default function Requests() {
               <tr><td>类型</td><td>{selected.kind}</td></tr>
               <tr><td>状态</td><td>{selected.status}</td></tr>
               <tr><td>完成原因</td><td>{selected.finishReason ?? '-'}</td></tr>
+              <tr><td>请求类型</td><td>{selected.requestType ?? '-'}</td></tr>
               <tr><td>模式</td><td>{selected.context?.modelMode === 'deep' ? '深度' : '普通'}</td></tr>
               <tr><td>模型</td><td>{selected.model}</td></tr>
               <tr><td>耗时</td><td>{selected.durationMs} ms</td></tr>
               <tr><td>轮次</td><td>{selected.rounds}</td></tr>
               <tr><td>用户</td><td>{selected.username ?? '-'}</td></tr>
               <tr><td>任务</td><td>{selected.taskName ?? '-'}</td></tr>
+              <tr><td>任务模板</td><td>{selected.taskTemplateId ?? '-'}</td></tr>
               <tr><td>房间</td><td>{selected.roomId ?? '-'}</td></tr>
               <tr><td>Skills</td><td>{selected.activeSkills.join(', ') || '-'}</td></tr>
               <tr><td>Skill 来源</td><td>{formatSkillSources(selected)}</td></tr>
               <tr><td>Tools</td><td>{selected.usedTools.join(', ') || '-'}</td></tr>
+              <tr>
+                <td>Sources</td>
+                <td>
+                  {selected.sources && selected.sources.length > 0
+                    ? selected.sources.map((source) => source.url
+                      ? <div key={`${source.type}:${source.ref}`}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></div>
+                      : <div key={`${source.type}:${source.ref}`}>{source.title} <code>{source.ref}</code></div>)
+                    : '-'}
+                </td>
+              </tr>
             </tbody>
           </table>
 

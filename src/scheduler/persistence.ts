@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir } from '../utils/helpers.js';
+import type { AgentRequestType } from '../agent-core/types.js';
+import { dedupeSources, type ToolSource } from '../tools/source.js';
+import type { TaskRunResult } from './index.js';
 
 export interface TaskDef {
   name: string;
@@ -17,6 +20,11 @@ export interface TaskHistory {
   success: boolean;
   output?: string;
   error?: string;
+  requestId?: string;
+  requestType?: AgentRequestType;
+  model?: string;
+  usedTools?: string[];
+  sources?: ToolSource[];
 }
 
 export class TaskPersistence {
@@ -44,13 +52,18 @@ export class TaskPersistence {
     fs.writeFileSync(this.tasksPath, JSON.stringify(tasks.map(normalizeTask), null, 2), 'utf-8');
   }
 
-  recordHistory(taskName: string, success: boolean, output?: string, error?: string): void {
+  recordHistory(taskName: string, result: TaskRunResult): void {
     const history: TaskHistory = {
       taskName,
       timestamp: new Date().toISOString(),
-      success,
-      output: output?.slice(0, 5000),
-      error: error?.slice(0, 2000),
+      success: result.success,
+      output: result.output?.slice(0, 5000),
+      error: result.error?.slice(0, 2000),
+      requestId: result.requestId,
+      requestType: result.requestType,
+      model: result.model,
+      usedTools: result.usedTools ? Array.from(new Set(result.usedTools)).slice(0, 20) : undefined,
+      sources: result.sources ? dedupeSources(result.sources).slice(0, 20) : undefined,
     };
     const filePath = path.join(this.historyDir, `${taskName}-${Date.now()}.json`);
     fs.writeFileSync(filePath, JSON.stringify(history, null, 2), 'utf-8');

@@ -43,6 +43,7 @@ export interface RequestLogEntry {
   threadId?: string;
   triggerMessageId?: string;
   taskName?: string;
+  taskTemplateId?: string;
   prompt: string;
   reply?: string;
   error?: string;

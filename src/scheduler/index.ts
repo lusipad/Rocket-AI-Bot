@@ -1,8 +1,21 @@
 import cron from 'node-cron';
 import type { Logger } from '../utils/logger.js';
 import { TaskPersistence, type TaskDef } from './persistence.js';
+import type { AgentRequestType } from '../agent-core/types.js';
+import type { ToolSource } from '../tools/source.js';
 
-export type TaskRunner = (task: TaskDef) => Promise<{ success: boolean; output?: string; error?: string }>;
+export interface TaskRunResult {
+  success: boolean;
+  output?: string;
+  error?: string;
+  requestId?: string;
+  requestType?: AgentRequestType;
+  model?: string;
+  usedTools?: string[];
+  sources?: ToolSource[];
+}
+
+export type TaskRunner = (task: TaskDef) => Promise<TaskRunResult>;
 
 export class Scheduler {
   private jobs = new Map<string, cron.ScheduledTask>();
@@ -49,14 +62,14 @@ export class Scheduler {
   }
 
   /** 立即执行一次任务 */
-  async runNow(name: string): Promise<{ success: boolean; output?: string; error?: string }> {
+  async runNow(name: string): Promise<TaskRunResult> {
     const tasks = this.persistence.loadTasks();
     const task = tasks.find(t => t.name === name);
     if (!task) return { success: false, error: `任务 ${name} 不存在` };
 
     this.logger.info('手动执行任务', { name });
     const result = await this.runner(task);
-    this.persistence.recordHistory(name, result.success, result.output, result.error);
+    this.persistence.recordHistory(name, result);
     return result;
   }
 
@@ -87,7 +100,7 @@ export class Scheduler {
     const job = cron.schedule(task.cron, async () => {
       this.logger.info('定时任务触发', { name: task.name });
       const result = await this.runner(task);
-      this.persistence.recordHistory(task.name, result.success, result.output, result.error);
+      this.persistence.recordHistory(task.name, result);
     });
 
     this.jobs.set(task.name, job);

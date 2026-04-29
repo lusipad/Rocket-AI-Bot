@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { getHistory } from '../api/client';
+import { Link } from 'react-router-dom';
+import { getHistory, type TaskHistory } from '../api/client';
 
 export default function TaskLogs() {
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<TaskHistory[]>([]);
 
   async function load() {
     try { setLogs(await getHistory()); } catch {}
@@ -17,19 +18,26 @@ export default function TaskLogs() {
       </div>
       <div className="card">
         <table>
-          <thead><tr><th>任务</th><th>时间</th><th>结果</th><th>输出</th></tr></thead>
+          <thead><tr><th>任务</th><th>时间</th><th>结果</th><th>模型</th><th>Tools</th><th>请求</th><th>输出</th></tr></thead>
           <tbody>
             {logs.map((l, i) => (
               <tr key={i}>
                 <td>{l.taskName}</td>
                 <td>{new Date(l.timestamp).toLocaleString()}</td>
                 <td><span className={`badge ${l.success ? 'ok' : 'err'}`}>{l.success ? '成功' : '失败'}</span></td>
+                <td>{l.model ?? '-'}</td>
+                <td>{l.usedTools?.join(', ') || '-'}</td>
+                <td>
+                  {l.requestId
+                    ? <Link to={`/requests?requestId=${encodeURIComponent(l.requestId)}`}>{l.requestId.slice(0, 8)}</Link>
+                    : '-'}
+                </td>
                 <td style={{maxWidth:400,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                   {l.output ?? l.error ?? '-'}
                 </td>
               </tr>
             ))}
-            {logs.length === 0 && <tr><td colSpan={4} style={{color:'#999'}}>暂无记录</td></tr>}
+            {logs.length === 0 && <tr><td colSpan={7} style={{color:'#999'}}>暂无记录</td></tr>}
           </tbody>
         </table>
       </div>

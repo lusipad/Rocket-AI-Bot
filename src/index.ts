@@ -546,6 +546,7 @@ async function main() {
         username: '系统',
         roomId: task.room,
         taskName: task.name,
+        taskTemplateId: task.templateId,
         prompt: instruction,
         reply,
         error: agentResponse.trace.error,
@@ -557,8 +558,25 @@ async function main() {
         rounds: agentResponse.trace.rounds,
       });
       return agentResponse.trace.status === 'success'
-        ? { success: true, output: reply.slice(0, 500) }
-        : { success: false, output: reply.slice(0, 500), error: agentResponse.trace.error ?? agentResponse.trace.finishReason };
+        ? {
+          success: true,
+          output: reply.slice(0, 500),
+          requestId,
+          requestType: agentResponse.requestType,
+          model: agentResponse.model,
+          usedTools: agentResponse.trace.usedTools,
+          sources: agentResponse.sources,
+        }
+        : {
+          success: false,
+          output: reply.slice(0, 500),
+          error: agentResponse.trace.error ?? agentResponse.trace.finishReason,
+          requestId,
+          requestType: agentResponse.requestType,
+          model: agentResponse.model,
+          usedTools: agentResponse.trace.usedTools,
+          sources: agentResponse.sources,
+        };
     } catch (err) {
       requestLogStore.record({
         requestId,
@@ -572,6 +590,7 @@ async function main() {
         username: '系统',
         roomId: task.room,
         taskName: task.name,
+        taskTemplateId: task.templateId,
         prompt: task.prompt?.trim() || task.name,
         error: String(err),
         requestType: agentResponse?.requestType ?? 'scheduler',
@@ -581,7 +600,15 @@ async function main() {
         usedTools: agentResponse?.trace.usedTools ?? [],
         rounds: agentResponse?.trace.rounds ?? 0,
       });
-      return { success: false, error: String(err) };
+      return {
+        success: false,
+        error: String(err),
+        requestId,
+        requestType: agentResponse?.requestType,
+        model: agentResponse?.model ?? llm.getModel(),
+        usedTools: agentResponse?.trace.usedTools ?? [],
+        sources: agentResponse?.sources ?? [],
+      };
     }
   }, logger);
 

@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { SkillRegistry } from '../src/skills/registry.ts';
 import { createWebServer } from '../src/web/server.ts';
-import { Scheduler } from '../src/scheduler/index.ts';
+import { Scheduler, type TaskRunner } from '../src/scheduler/index.ts';
 import { TaskPersistence } from '../src/scheduler/persistence.ts';
 import { RequestLogStore } from '../src/observability/request-log-store.ts';
 
@@ -19,7 +19,7 @@ function createLogger() {
   };
 }
 
-function createScheduler(root: string) {
+function createScheduler(root: string, runner?: TaskRunner) {
   const persistence = new TaskPersistence(
     path.join(root, 'tasks.json'),
     path.join(root, 'history'),
@@ -27,7 +27,7 @@ function createScheduler(root: string) {
 
   return new Scheduler(
     persistence,
-    async (task) => ({ success: true, output: `ran:${task.name}` }),
+    runner ?? (async (task) => ({ success: true, output: `ran:${task.name}` })),
     createLogger() as never,
   );
 }
@@ -388,6 +388,71 @@ test('从未知任务模板创建任务时应返回 404', async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('手动执行任务应返回并记录请求追踪信息', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
+  const scheduler = createScheduler(root, async (task) => ({
+    success: true,
+    output: `ran:${task.name}`,
+    requestId: 'req-task-run-1',
+    requestType: 'pipeline_monitor',
+    model: 'gpt-5.4',
+    usedTools: ['azure_devops_server_rest'],
+    sources: [{
+      type: 'azure_devops',
+      title: 'Build 42',
+      ref: 'build:42',
+      url: 'http://localhost:8081/build/42',
+    }],
+  }));
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+  scheduler.addTask({
+    name: 'pipeline-health',
+    templateId: 'pipeline-health-check',
+    prompt: '检查 pipeline',
+    cron: '15 11 * * 1-5',
+    room: 'DEVTOOLS',
+    enabled: false,
+  });
+
+  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/tasks/pipeline-health/run`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(response.status, 200);
+
+    const body = await response.json();
+    assert.equal(body.success, true);
+    assert.equal(body.requestId, 'req-task-run-1');
+    assert.equal(body.requestType, 'pipeline_monitor');
+    assert.deepEqual(body.usedTools, ['azure_devops_server_rest']);
+  });
+
+  const history = scheduler.getHistory('pipeline-health', 1);
+  assert.equal(history.length, 1);
+  assert.deepEqual(history, [{
+    taskName: 'pipeline-health',
+    timestamp: history[0].timestamp,
+    success: true,
+    output: 'ran:pipeline-health',
+    requestId: 'req-task-run-1',
+    requestType: 'pipeline_monitor',
+    model: 'gpt-5.4',
+    usedTools: ['azure_devops_server_rest'],
+    sources: [{
+      type: 'azure_devops',
+      title: 'Build 42',
+      ref: 'build:42',
+      url: 'http://localhost:8081/build/42',
+    }],
+  }]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('skills 接口应返回已装载列表并支持切换启用状态', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-'));
   const scheduler = createScheduler(root);
@@ -652,6 +717,7 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     username: '系统',
     roomId: 'general',
     taskName: 'daily-news',
+    taskTemplateId: 'work-item-risk-digest',
     prompt: '搜索新闻',
     requestType: 'scheduler',
     error: 'AI 服务暂时不可用',
@@ -691,6 +757,7 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     assert.equal(detailResponse.status, 200);
     const detail = await detailResponse.json();
     assert.equal(detail.taskName, 'daily-news');
+    assert.equal(detail.taskTemplateId, 'work-item-risk-digest');
     assert.equal(detail.finishReason, 'circuit_breaker');
 
     const summaryResponse = await fetch(`${baseUrl}/api/requests/summary/recent`, {

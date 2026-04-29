@@ -21,6 +21,29 @@ export interface TaskTemplate {
   defaultPrompt: string;
 }
 
+export interface SourceRef {
+  type: 'file' | 'azure_devops' | 'web' | 'chat';
+  title: string;
+  ref: string;
+  url?: string;
+}
+
+export interface TaskRunResult {
+  success: boolean;
+  output?: string;
+  error?: string;
+  requestId?: string;
+  requestType?: string;
+  model?: string;
+  usedTools?: string[];
+  sources?: SourceRef[];
+}
+
+export interface TaskHistory extends TaskRunResult {
+  taskName: string;
+  timestamp: string;
+}
+
 export interface Skill {
   name: string;
   description: string;
@@ -50,13 +73,16 @@ export interface RequestLog {
   threadId?: string;
   triggerMessageId?: string;
   taskName?: string;
+  taskTemplateId?: string;
   prompt: string;
   reply?: string;
   error?: string;
+  requestType?: string;
   activeSkills: string[];
   skillSources: Record<string, 'explicit' | 'model' | 'system'>;
   usedTools: string[];
   rounds: number;
+  sources?: SourceRef[];
   context?: {
     modelMode?: 'normal' | 'deep';
   };
@@ -205,11 +231,11 @@ export async function deleteTask(name: string): Promise<void> {
   return request(`/tasks/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
-export async function runTask(name: string): Promise<any> {
+export async function runTask(name: string): Promise<TaskRunResult> {
   return request(`/tasks/${encodeURIComponent(name)}/run`, { method: 'POST' });
 }
 
-export async function getHistory(name?: string, limit?: number): Promise<any[]> {
+export async function getHistory(name?: string, limit?: number): Promise<TaskHistory[]> {
   const params = new URLSearchParams();
   if (name) params.set('name', name);
   if (limit) params.set('limit', String(limit));
