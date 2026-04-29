@@ -1,11 +1,19 @@
 import { useEffect, useState } from 'react';
-import { getStatus } from '../api/client';
+import { Link } from 'react-router-dom';
+import { getDevToolsMetrics, getStatus, type DevToolsMetrics } from '../api/client';
 
 export default function Dashboard() {
   const [status, setStatus] = useState<any>(null);
+  const [devTools, setDevTools] = useState<DevToolsMetrics | null>(null);
 
   useEffect(() => {
-    getStatus().then(setStatus).catch(console.error);
+    Promise.all([
+      getStatus(),
+      getDevToolsMetrics(200),
+    ]).then(([nextStatus, nextDevTools]) => {
+      setStatus(nextStatus);
+      setDevTools(nextDevTools);
+    }).catch(console.error);
   }, []);
 
   if (!status) return <div>加载中...</div>;
@@ -41,6 +49,38 @@ export default function Dashboard() {
           </tbody>
         </table>
       </div>
+
+      <div className="card">
+        <h2>DevTools 工作流</h2>
+        <table>
+          <tbody>
+            <tr><td>最近请求</td><td>{devTools?.devToolsTotal ?? 0}/{devTools?.total ?? 0}</td></tr>
+            <tr><td>占比</td><td>{formatRate(devTools?.devToolsRate)}</td></tr>
+            <tr><td>Source 覆盖</td><td>{devTools?.sourceCoverage.withSources ?? 0} 条 · {formatRate(devTools?.sourceCoverage.sourceRate)}</td></tr>
+            <tr><td>请求类型</td><td>{formatCounts(devTools?.byRequestType)}</td></tr>
+            <tr><td>工具</td><td>{formatCounts(devTools?.byTool)}</td></tr>
+          </tbody>
+        </table>
+        <div style={{marginTop: 12}}>
+          <Link to="/requests?requestType=pipeline_monitor" style={{marginRight: 12}}>Pipeline</Link>
+          <Link to="/requests?requestType=pr_review" style={{marginRight: 12}}>PR</Link>
+          <Link to="/requests?requestType=work_item_report">工作项</Link>
+        </div>
+      </div>
     </div>
   );
+}
+
+function formatRate(value: number | undefined): string {
+  return value === undefined ? '-' : `${Math.round(value * 100)}%`;
+}
+
+function formatCounts(counts: Record<string, number> | undefined): string {
+  if (!counts || Object.keys(counts).length === 0) {
+    return '-';
+  }
+
+  return Object.entries(counts)
+    .map(([name, count]) => `${name}: ${count}`)
+    .join(', ');
 }

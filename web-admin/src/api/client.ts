@@ -97,6 +97,24 @@ export interface RequestSummary {
     chat: number;
     scheduler: number;
   };
+  byRequestType?: Record<string, number>;
+  sourceCoverage?: {
+    withSources: number;
+    sourceRate: number;
+  };
+  lastFinishedAt?: string;
+}
+
+export interface DevToolsMetrics {
+  total: number;
+  devToolsTotal: number;
+  devToolsRate: number;
+  byRequestType: Record<string, number>;
+  byTool: Record<string, number>;
+  sourceCoverage: {
+    withSources: number;
+    sourceRate: number;
+  };
   lastFinishedAt?: string;
 }
 
@@ -146,6 +164,7 @@ export async function probeApiModes(): Promise<ApiModeProbeSummary> {
 export async function getRequests(params?: {
   kind?: 'chat' | 'scheduler';
   status?: 'success' | 'error' | 'rejected';
+  requestType?: string;
   username?: string;
   roomId?: string;
   taskName?: string;
@@ -154,6 +173,7 @@ export async function getRequests(params?: {
   const search = new URLSearchParams();
   if (params?.kind) search.set('kind', params.kind);
   if (params?.status) search.set('status', params.status);
+  if (params?.requestType) search.set('requestType', params.requestType);
   if (params?.username) search.set('username', params.username);
   if (params?.roomId) search.set('roomId', params.roomId);
   if (params?.taskName) search.set('taskName', params.taskName);
@@ -169,6 +189,12 @@ export async function getRequestSummary(limit?: number): Promise<RequestSummary>
   const search = new URLSearchParams();
   if (limit) search.set('limit', String(limit));
   return request(`/requests/summary/recent?${search.toString()}`);
+}
+
+export async function getDevToolsMetrics(limit?: number): Promise<DevToolsMetrics> {
+  const search = new URLSearchParams();
+  if (limit) search.set('limit', String(limit));
+  return request(`/requests/metrics/devtools?${search.toString()}`);
 }
 
 export async function getTasks(): Promise<Task[]> {

@@ -118,48 +118,69 @@ test('RequestLogStore 应支持筛选与汇总', () => {
     usedTools: [],
     rounds: 2,
   });
+  store.record({
+    requestId: 'req-4',
+    kind: 'scheduler',
+    status: 'success',
+    model: 'gpt-5.4',
+    startedAt: '2026-04-26T03:00:00.000Z',
+    finishedAt: '2026-04-26T03:00:02.000Z',
+    durationMs: 2000,
+    taskName: 'work-item-risk',
+    prompt: '工作项风险摘要',
+    requestType: 'work_item_report',
+    activeSkills: [],
+    skillSources: {},
+    usedTools: ['azure_devops_server_rest'],
+    rounds: 1,
+    sources: [{ type: 'azure_devops', title: 'Work Items', ref: 'wit/wiql' }],
+  });
 
   assert.deepEqual(store.list({ kind: 'chat' }).map((entry) => entry.requestId), ['req-2', 'req-1']);
   assert.deepEqual(store.list({ status: 'error' }).map((entry) => entry.requestId), ['req-3']);
   assert.deepEqual(store.list({ username: 'alice', limit: 1 }).map((entry) => entry.requestId), ['req-2']);
   assert.deepEqual(store.list({ requestType: 'code_query' }).map((entry) => entry.requestId), ['req-1']);
+  assert.deepEqual(store.list({ requestType: 'work_item_report' }).map((entry) => entry.requestId), ['req-4']);
 
   assert.deepEqual(store.summarizeRecent(10), {
-    total: 3,
-    success: 1,
+    total: 4,
+    success: 2,
     error: 1,
     rejected: 1,
     byKind: {
       chat: 2,
-      scheduler: 1,
+      scheduler: 2,
     },
     byRequestType: {
       code_query: 1,
       general: 1,
       scheduler: 1,
+      work_item_report: 1,
     },
     sourceCoverage: {
-      withSources: 1,
-      sourceRate: 0.333,
+      withSources: 2,
+      sourceRate: 0.5,
     },
-    lastFinishedAt: '2026-04-26T02:00:03.000Z',
+    lastFinishedAt: '2026-04-26T03:00:02.000Z',
   });
 
   assert.deepEqual(store.summarizeDevTools(10), {
-    total: 3,
-    devToolsTotal: 1,
-    devToolsRate: 0.333,
+    total: 4,
+    devToolsTotal: 2,
+    devToolsRate: 0.5,
     byRequestType: {
       code_query: 1,
+      work_item_report: 1,
     },
     byTool: {
+      azure_devops_server_rest: 1,
       read_file: 1,
     },
     sourceCoverage: {
-      withSources: 1,
+      withSources: 2,
       sourceRate: 1,
     },
-    lastFinishedAt: '2026-04-26T02:00:03.000Z',
+    lastFinishedAt: '2026-04-26T03:00:02.000Z',
   });
 
   fs.rmSync(root, { recursive: true, force: true });
