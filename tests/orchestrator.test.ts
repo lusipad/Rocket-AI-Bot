@@ -290,6 +290,102 @@ test('Orchestrator 对 Azure DevOps 文件 URL review 应走直接快路径', as
   });
 });
 
+test('Orchestrator 在显式 skill 下不应让 Azure DevOps 文件 URL 快路径抢先', async () => {
+  let executeCalled = false;
+
+  class FakeLLM {
+    public readonly calls: OpenAI.Chat.Completions.ChatCompletionMessageParam[][] = [];
+    public readonly toolsByCall: OpenAI.Chat.Completions.ChatCompletionTool[][] = [];
+
+    async chat(
+      messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [],
+    ) {
+      this.calls.push(messages);
+      this.toolsByCall.push(tools);
+      return {
+        choices: [{
+          index: 0,
+          finish_reason: 'stop',
+          logprobs: null,
+          message: {
+            role: 'assistant',
+            content: '按 code-lookup 处理',
+          },
+        }],
+      } as OpenAI.Chat.Completions.ChatCompletion;
+    }
+  }
+
+  const llm = new FakeLLM();
+  const orchestrator = new Orchestrator(
+    llm as never,
+    {
+      getDefinitions() {
+        return [{
+          type: 'function',
+          function: {
+            name: 'azure_devops_server_rest',
+            description: '查询 ADO Server',
+            parameters: { type: 'object', properties: {} },
+          },
+        }, {
+          type: 'function',
+          function: {
+            name: 'read_file',
+            description: '读取文件',
+            parameters: { type: 'object', properties: {} },
+          },
+        }];
+      },
+      async execute() {
+        executeCalled = true;
+        return { success: false, data: { error: '不应走快路径' } };
+      },
+    } as never,
+    {
+      llm: { contextWindow: 32768 },
+      rocketchat: { botUsername: 'RocketBot' },
+    } as never,
+    createLogger() as never,
+    createSkillRegistry([{
+      name: 'code-lookup',
+      description: '查代码',
+      allowedTools: 'read_file',
+      instructions: '- 先按代码查询处理',
+    }]),
+  );
+  const trace: OrchestratorTrace = {
+    activeSkills: [],
+    skillSources: {},
+    usedTools: [],
+    rounds: 0,
+    status: 'success',
+  };
+
+  const reply = await orchestrator.handle(
+    'user-1',
+    'alice',
+    '$code-lookup http://localhost:8081/DefaultCollection/_git/test?path=/codex-skill-smoke.txt&version=GBfeature/demo&_a=contents review下',
+    [],
+    [],
+    undefined,
+    { trace },
+  );
+
+  assert.equal(reply, '已激活 skill: code-lookup\n\n按 code-lookup 处理');
+  assert.equal(executeCalled, false);
+  assert.equal(llm.calls.length, 1);
+  assert.deepEqual(
+    llm.toolsByCall[0].map((tool) => tool.function.name),
+    ['activate_skill', 'read_file'],
+  );
+  assert.deepEqual(trace.activeSkills, ['code-lookup']);
+  assert.deepEqual(trace.skillSources, { 'code-lookup': 'explicit' });
+  assert.deepEqual(trace.usedTools, []);
+  assert.equal(trace.finishReason, 'reply');
+});
+
 test('Orchestrator 应将最近消息和当前图片作为多模态 user content 发送给 LLM', async () => {
   class FakeLLM {
     public readonly calls: OpenAI.Chat.Completions.ChatCompletionMessageParam[][] = [];
@@ -1587,6 +1683,102 @@ test('Orchestrator 对公开实时新闻请求应走 Responses 联网快路径',
     webSearchUsed: true,
     modelMode: 'normal',
   });
+});
+
+test('Orchestrator 在显式 skill 下不应强制公开实时查询路径', async () => {
+  class FakeLLM {
+    public readonly calls: Array<{
+      tools: OpenAI.Chat.Completions.ChatCompletionTool[];
+      options: Record<string, unknown> | undefined;
+    }> = [];
+
+    async chat(
+      _messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [],
+      options?: Record<string, unknown>,
+    ) {
+      this.calls.push({ tools, options });
+      return {
+        choices: [{
+          index: 0,
+          finish_reason: 'stop',
+          logprobs: null,
+          message: {
+            role: 'assistant',
+            content: '按 code-lookup 处理实时问题',
+          },
+        }],
+      } as OpenAI.Chat.Completions.ChatCompletion;
+    }
+  }
+
+  const llm = new FakeLLM();
+  let definitionsCalled = false;
+  const orchestrator = new Orchestrator(
+    llm as never,
+    {
+      getDefinitions() {
+        definitionsCalled = true;
+        return [{
+          type: 'function',
+          function: {
+            name: 'read_file',
+            description: '读取文件',
+            parameters: { type: 'object', properties: {} },
+          },
+        }];
+      },
+    } as never,
+    {
+      llm: {
+        model: 'gpt-5.5',
+        apiMode: 'chat_completions',
+        contextWindow: 32768,
+        nativeWebSearch: {
+          enabled: true,
+          tools: [{ type: 'web_search' }],
+          requestBody: { tool_choice: 'auto' },
+        },
+      },
+      rocketchat: { botUsername: 'RocketBot' },
+    } as never,
+    createLogger() as never,
+    createSkillRegistry([{
+      name: 'code-lookup',
+      description: '查代码',
+      allowedTools: 'read_file',
+      instructions: '- 先按代码查询处理',
+    }]),
+  );
+  const trace: OrchestratorTrace = {
+    activeSkills: [],
+    skillSources: {},
+    usedTools: [],
+    rounds: 0,
+    status: 'success',
+  };
+
+  const reply = await orchestrator.handle(
+    'user-1',
+    'alice',
+    '$code-lookup 24小时内的AI新闻',
+    [],
+    [],
+    undefined,
+    { trace },
+  );
+
+  assert.equal(reply, '已激活 skill: code-lookup\n\n按 code-lookup 处理实时问题');
+  assert.equal(definitionsCalled, true);
+  assert.equal(llm.calls.length, 1);
+  assert.deepEqual(
+    llm.calls[0].tools.map((tool) => tool.function.name),
+    ['activate_skill', 'read_file'],
+  );
+  assert.equal(llm.calls[0].options?.apiMode, undefined);
+  assert.deepEqual(trace.activeSkills, ['code-lookup']);
+  assert.deepEqual(trace.skillSources, { 'code-lookup': 'explicit' });
+  assert.equal(trace.finishReason, 'reply');
 });
 
 test('Orchestrator 不应把项目内版本问题误判为公网实时查询', async () => {

@@ -290,14 +290,16 @@ export class Orchestrator {
     const usedToolNames = new Set<string>();
     const toolSources: ToolSource[] = [];
     try {
-      const directAdoUrlReply = await this.tryHandleAzureDevOpsFileUrl(
-        normalizedMessage,
-        requestId,
-        requestContext,
-        usedToolNames,
-        modelMode,
-        toolSources,
-      );
+      const directAdoUrlReply = activeSkills.length === 0
+        ? await this.tryHandleAzureDevOpsFileUrl(
+          normalizedMessage,
+          requestId,
+          requestContext,
+          usedToolNames,
+          modelMode,
+          toolSources,
+        )
+        : null;
       if (directAdoUrlReply) {
         completeTrace(trace, [], {}, usedToolNames, 1, 'success', 'ado_url_fast_path');
         syncTraceSources(trace, toolSources);
@@ -324,7 +326,8 @@ export class Orchestrator {
         return decorateReply(directWebReply.reply, activeSkills, usedToolNames);
       }
 
-      const forceNativeWebSearch = shouldUsePublicRealtimeWebSearch(normalizedMessage, this.config);
+      const forceNativeWebSearch = activeSkills.length === 0
+        && shouldUsePublicRealtimeWebSearch(normalizedMessage, this.config);
       const context = new ContextBuilder(this.config, buildSystemPrompt(this.config, {
         availableSkills: this.skillRegistry.list(),
         activeSkills,

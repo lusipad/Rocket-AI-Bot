@@ -141,6 +141,129 @@ test('AgentRuntime 应优先使用已注册 capability，再回退到 Orchestrat
   assert.equal(orchestratorCalled, false);
 });
 
+test('AgentRuntime 应在进入 Orchestrator 前处理禁用的显式 skill', async () => {
+  let orchestratorCalled = false;
+  const runtime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-5.5' };
+    },
+    async handle() {
+      orchestratorCalled = true;
+      return 'fallback';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-5.5';
+    },
+  } as never, [], {
+    skillRuntime: {
+      route() {
+        return {
+          kind: 'disabled_skill',
+          cleanedInput: '查入口',
+          skills: [],
+          disabledSkillNames: ['code-lookup'],
+        };
+      },
+    },
+  });
+
+  const response = await runtime.handle({
+    id: 'req-disabled-skill',
+    input: '$code-lookup 查入口',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(orchestratorCalled, false);
+  assert.equal(response.status, 'success');
+  assert.equal(response.finishReason, 'disabled_skill');
+  assert.equal(response.requestType, 'general');
+  assert.match(response.text, /已安装但未启用：code-lookup/);
+  assert.deepEqual(response.trace.usedTools, []);
+  assert.deepEqual(response.trace.activeSkills, []);
+});
+
+test('AgentRuntime 应让启用的显式 skill 优先进入 Orchestrator skill loop', async () => {
+  let orchestratorCalled = false;
+  let capabilityCalled = false;
+  const runtime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-5.5' };
+    },
+    async handle(
+      _userId: string,
+      _username: string,
+      _message: string,
+      _conversation: unknown[],
+      _images: string[],
+      _requestContext: unknown,
+      options: { trace?: OrchestratorTrace },
+    ) {
+      orchestratorCalled = true;
+      if (options.trace) {
+        options.trace.status = 'success';
+        options.trace.finishReason = 'reply';
+        options.trace.rounds = 1;
+        options.trace.activeSkills = ['code-lookup'];
+        options.trace.skillSources = { 'code-lookup': 'explicit' };
+        options.trace.usedTools = ['read_file'];
+      }
+      return 'skill reply';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-5.5';
+    },
+  } as never, [{
+    id: 'catch-all',
+    description: 'catch all capability',
+    priority: 100,
+    canHandle: () => true,
+    async handle(request) {
+      capabilityCalled = true;
+      return {
+        requestId: request.id,
+        status: 'success',
+        text: 'capability reply',
+        messages: [{ type: 'text', text: 'capability reply' }],
+        model: 'none',
+        trace: {
+          activeSkills: [],
+          skillSources: {},
+          usedTools: [],
+          rounds: 0,
+          status: 'success',
+        },
+      };
+    },
+  }], {
+    skillRuntime: {
+      route() {
+        return {
+          kind: 'skill',
+          cleanedInput: '查入口',
+          skills: [{ name: 'code-lookup' }],
+          disabledSkillNames: [],
+        };
+      },
+    },
+  });
+
+  const response = await runtime.handle({
+    id: 'req-explicit-skill',
+    input: '$code-lookup 查入口',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(orchestratorCalled, true);
+  assert.equal(capabilityCalled, false);
+  assert.equal(response.text, 'skill reply');
+  assert.deepEqual(response.trace.activeSkills, ['code-lookup']);
+  assert.deepEqual(response.trace.usedTools, ['read_file']);
+});
+
 test('CapabilityRegistry 应拒绝重复 id', () => {
   const registry = new CapabilityRegistry();
   const capability = {

@@ -14,7 +14,7 @@ import {
   Orchestrator,
   type ModelModePreview,
 } from './agent/orchestrator.js';
-import { AgentRuntime, toRequestContext } from './agent-runtime/index.js';
+import { AgentRuntime, ProjectSkillCatalog, SkillRuntime, toRequestContext } from './agent-runtime/index.js';
 import { createPublicRealtimeWebSearchCapability } from './agent-core/capabilities/public-realtime-web-search.js';
 import { createAzureDevOpsFileUrlCapability } from './agent-core/capabilities/azure-devops-file-url.js';
 import type { AgentConversationMessage, AgentResponse, AgentTrace } from './agent-core/types.js';
@@ -148,6 +148,7 @@ async function main() {
   const llm = new LLMClient(config, logger);
   const skillRegistry = new SkillRegistry(undefined, logger);
   const orchestrator = new Orchestrator(llm, registry, config, logger, skillRegistry);
+  const skillRuntime = new SkillRuntime(new ProjectSkillCatalog(skillRegistry));
   const agentRuntime = new AgentRuntime(orchestrator, llm, [
     createAzureDevOpsFileUrlCapability({
       config,
@@ -169,7 +170,7 @@ async function main() {
         toRequestContext(request),
       ),
     }),
-  ]);
+  ], { skillRuntime });
   const requestLogStore = new RequestLogStore();
   const discussionSummaryStore = new DiscussionSummaryStore();
   const discussionSummaryService = new DiscussionSummaryService(discussionSummaryStore);

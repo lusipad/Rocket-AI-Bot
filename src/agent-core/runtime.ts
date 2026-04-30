@@ -12,14 +12,30 @@ import { CapabilityRegistry, RequestRouter } from './capabilities.js';
 import { classifyAgentInteraction } from './classification.js';
 import { dedupeSources } from '../tools/source.js';
 
+export interface AgentRuntimeSkillRoute {
+  kind: 'skill' | 'disabled_skill' | 'fallback';
+  cleanedInput: string;
+  skills: Array<{ name: string }>;
+  disabledSkillNames: string[];
+}
+
+export interface AgentRuntimeOptions {
+  skillRuntime?: {
+    route(request: Pick<AgentRequest, 'input'>): AgentRuntimeSkillRoute;
+  };
+}
+
 export class AgentRuntime {
   private readonly router: RequestRouter;
+  private readonly skillRuntime?: AgentRuntimeOptions['skillRuntime'];
 
   constructor(
     private readonly orchestrator: Orchestrator,
     private readonly llm: LLMClient,
     capabilities: AgentCapability[] = [],
+    options: AgentRuntimeOptions = {},
   ) {
+    this.skillRuntime = options.skillRuntime;
     const registry = new CapabilityRegistry();
     for (const capability of capabilities) {
       registry.register(capability);
@@ -43,6 +59,18 @@ export class AgentRuntime {
   }
 
   async handle(request: AgentRequest): Promise<AgentResponse> {
+    const skillRoute = this.skillRuntime?.route(request);
+    if (skillRoute?.kind === 'disabled_skill') {
+      return annotateResponse(
+        request,
+        createDisabledSkillResponse(request, this.llm.getModel(), skillRoute.disabledSkillNames),
+      );
+    }
+    if (skillRoute?.kind === 'skill') {
+      const response = await this.handleWithOrchestrator(request);
+      return annotateResponse(request, response);
+    }
+
     const response = await this.router.handle(request);
     return annotateResponse(request, response);
   }
@@ -74,6 +102,26 @@ export class AgentRuntime {
       trace: toAgentTrace(trace),
     };
   }
+}
+
+function createDisabledSkillResponse(request: AgentRequest, model: string, disabledSkillNames: string[]): AgentResponse {
+  const text = `以下 skill 已安装但未启用：${disabledSkillNames.join(', ')}。请先在管理页启用后再使用。`;
+  return {
+    requestId: request.id,
+    status: 'success',
+    text,
+    messages: [{ type: 'text', text }],
+    finishReason: 'disabled_skill',
+    model,
+    trace: {
+      activeSkills: [],
+      skillSources: {},
+      usedTools: [],
+      rounds: 0,
+      status: 'success',
+      finishReason: 'disabled_skill',
+    },
+  };
 }
 
 function createTrace(): OrchestratorTrace {

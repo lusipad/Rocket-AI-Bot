@@ -1,4 +1,5 @@
 export { AgentRuntime, toRequestContext } from '../agent-core/runtime.js';
+export type { AgentRuntimeOptions, AgentRuntimeSkillRoute } from '../agent-core/runtime.js';
 export { CapabilityRegistry, RequestRouter } from '../agent-core/capabilities.js';
 export { classifyAgentInteraction, isAgentRequestType } from '../agent-core/classification.js';
 export type {
@@ -20,3 +21,8 @@ export {
   type AgentSkillManifest,
   type AgentSkillMatch,
 } from './skill-catalog.js';
+export {
+  SkillRuntime,
+  type AgentSkillRoute,
+  type AgentSkillRouteKind,
+} from './skill-runtime.js';
