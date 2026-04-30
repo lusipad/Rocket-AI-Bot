@@ -14,7 +14,7 @@ import {
   Orchestrator,
   type ModelModePreview,
 } from './agent/orchestrator.js';
-import { AgentRuntime, toRequestContext } from './agent-core/runtime.js';
+import { AgentRuntime, toRequestContext } from './agent-runtime/index.js';
 import { createPublicRealtimeWebSearchCapability } from './agent-core/capabilities/public-realtime-web-search.js';
 import { createAzureDevOpsFileUrlCapability } from './agent-core/capabilities/azure-devops-file-url.js';
 import type { AgentConversationMessage, AgentResponse, AgentTrace } from './agent-core/types.js';
