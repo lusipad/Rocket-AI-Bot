@@ -160,8 +160,10 @@ test('AgentRuntime 应在进入 Orchestrator 前处理禁用的显式 skill', as
       route() {
         return {
           kind: 'disabled_skill',
+          originalInput: '$code-lookup 查入口',
           cleanedInput: '查入口',
           skills: [],
+          skillSources: {},
           disabledSkillNames: ['code-lookup'],
         };
       },
@@ -242,8 +244,17 @@ test('AgentRuntime 应让启用的显式 skill 优先进入 Orchestrator skill l
       route() {
         return {
           kind: 'skill',
+          originalInput: '$code-lookup 查入口',
           cleanedInput: '查入口',
-          skills: [{ name: 'code-lookup' }],
+          skills: [{
+            name: 'code-lookup',
+            description: '查代码',
+            allowedTools: ['read_file'],
+            instructions: '- 查代码',
+            directory: 'skills/code-lookup',
+            filePath: 'skills/code-lookup/SKILL.md',
+          }],
+          skillSources: { 'code-lookup': 'explicit' },
           disabledSkillNames: [],
         };
       },

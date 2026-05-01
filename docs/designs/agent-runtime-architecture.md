@@ -85,7 +85,8 @@ Rocket.Chat       Scheduler        HTTP/Admin        CLI/API
 - `AgentRuntime` may bridge to the legacy `Orchestrator` during migration, but new behavior should enter through the Agent boundary.
 - Skill discovery must be manifest-first: name, description, allowed tools, enabled state, and file path only.
 - Full `SKILL.md` instructions are loaded only for selected or explicitly requested skills.
-- Explicit `$skill` requests should route through skill handling before deterministic capability fast paths.
+- Explicit `$skill` and natural-language skill requests should route through skill handling before deterministic capability fast paths.
+- AgentRuntime should pass selected skill metadata into the legacy Orchestrator bridge instead of requiring the bridge to reselect those skills.
 - Deterministic fast paths should become built-in skills over time. `Capability` remains a migration mechanism, not the final capability model.
 - Observability belongs to Agent execution: every run should be traceable by `requestId`, request type, tools, sources, and status.
 
@@ -97,7 +98,7 @@ New code should import Agent-facing APIs from `src/agent-runtime` instead of rea
 src/agent-runtime
   index.ts          public facade
   skill-catalog.ts  Agent-side skill discovery/loading facade
-  skill-runtime.ts  first skill routing surface for explicit skill preflight
+  skill-runtime.ts  first skill routing surface for explicit and natural-language skill preflight
 
 src/agent-core      migration implementation detail
 src/skills          project skill storage/legacy registry

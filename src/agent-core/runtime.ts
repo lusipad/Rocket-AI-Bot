@@ -1,6 +1,12 @@
 import type { RequestContext } from '../bot/message-handler.js';
-import { Orchestrator, type ModelModePreview, type OrchestratorTrace } from '../agent/orchestrator.js';
+import {
+  Orchestrator,
+  type ModelModePreview,
+  type OrchestratorTrace,
+  type SkillActivationSource,
+} from '../agent/orchestrator.js';
 import type { LLMClient } from '../llm/client.js';
+import type { SkillDefinition } from '../skills/types.js';
 import type {
   AgentConversationMessage,
   AgentCapability,
@@ -14,8 +20,10 @@ import { dedupeSources } from '../tools/source.js';
 
 export interface AgentRuntimeSkillRoute {
   kind: 'skill' | 'disabled_skill' | 'fallback';
+  originalInput: string;
   cleanedInput: string;
-  skills: Array<{ name: string }>;
+  skills: SkillDefinition[];
+  skillSources: Record<string, SkillActivationSource>;
   disabledSkillNames: string[];
 }
 
@@ -67,7 +75,7 @@ export class AgentRuntime {
       );
     }
     if (skillRoute?.kind === 'skill') {
-      const response = await this.handleWithOrchestrator(request);
+      const response = await this.handleWithOrchestrator(request, skillRoute);
       return annotateResponse(request, response);
     }
 
@@ -75,7 +83,10 @@ export class AgentRuntime {
     return annotateResponse(request, response);
   }
 
-  private async handleWithOrchestrator(request: AgentRequest): Promise<AgentResponse> {
+  private async handleWithOrchestrator(
+    request: AgentRequest,
+    skillRoute?: AgentRuntimeSkillRoute,
+  ): Promise<AgentResponse> {
     const trace = createTrace();
     const reply = await this.orchestrator.handle(
       request.actor.id,
@@ -87,6 +98,14 @@ export class AgentRuntime {
       {
         requestId: request.id,
         trace,
+        selectedSkills: skillRoute
+          ? {
+            skills: skillRoute.skills,
+            skillSources: skillRoute.skillSources,
+            cleanedMessage: skillRoute.cleanedInput,
+            disabledSkillNames: skillRoute.disabledSkillNames,
+          }
+          : undefined,
       },
     );
 

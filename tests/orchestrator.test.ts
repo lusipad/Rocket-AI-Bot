@@ -1472,6 +1472,110 @@ test('Orchestrator 在聊天中显式使用 $skill 时应预激活 skill 并清�
   assert.equal(lastUserMessage.content, '@alice: @RocketBot 看下 src/index.ts 在做什么');
 });
 
+test('Orchestrator 应优先使用 AgentRuntime 传入的预选 skill', async () => {
+  class FakeLLM {
+    public readonly toolNamesByRound: string[][] = [];
+    public readonly calls: OpenAI.Chat.Completions.ChatCompletionMessageParam[][] = [];
+
+    async chat(
+      messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [],
+    ) {
+      this.calls.push(messages);
+      this.toolNamesByRound.push(tools.map((tool) => tool.function.name));
+
+      return {
+        choices: [{
+          index: 0,
+          finish_reason: 'stop',
+          logprobs: null,
+          message: {
+            role: 'assistant',
+            content: '按预选 skill 处理',
+          },
+        }],
+      } as OpenAI.Chat.Completions.ChatCompletion;
+    }
+  }
+
+  const llm = new FakeLLM();
+  const orchestrator = new Orchestrator(
+    llm as never,
+    {
+      getDefinitions() {
+        return [
+          {
+            type: 'function',
+            function: {
+              name: 'search_code',
+              description: '搜索代码',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+          {
+            type: 'function',
+            function: {
+              name: 'read_file',
+              description: '读取文件',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        ];
+      },
+      async execute() {
+        throw new Error('不应执行外部工具');
+      },
+    } as never,
+    {
+      llm: { contextWindow: 32768 },
+      rocketchat: { botUsername: 'RocketBot' },
+    } as never,
+    createLogger() as never,
+    createSkillRegistry([]),
+  );
+  const trace: OrchestratorTrace = {
+    activeSkills: [],
+    skillSources: {},
+    usedTools: [],
+    rounds: 0,
+    status: 'success',
+  };
+
+  const reply = await orchestrator.handle(
+    'user-1',
+    'alice',
+    '@RocketBot 用 code-lookup 查入口',
+    [],
+    [],
+    undefined,
+    {
+      trace,
+      selectedSkills: {
+        skills: [{
+          name: 'code-lookup',
+          description: '查代码',
+          allowedTools: ['read_file'],
+          instructions: '- 先结论后证据',
+          directory: 'skills/code-lookup',
+          filePath: 'skills/code-lookup/SKILL.md',
+        }],
+        skillSources: { 'code-lookup': 'explicit' },
+        cleanedMessage: '@RocketBot 查入口',
+        disabledSkillNames: [],
+      },
+    },
+  );
+
+  assert.equal(reply, '已激活 skill: code-lookup\n\n按预选 skill 处理');
+  assert.deepEqual(llm.toolNamesByRound[0], ['activate_skill', 'read_file']);
+  assert.deepEqual(trace.activeSkills, ['code-lookup']);
+  assert.deepEqual(trace.skillSources, { 'code-lookup': 'explicit' });
+
+  const firstCall = llm.calls[0];
+  const lastUserMessage = firstCall[firstCall.length - 1] as OpenAI.Chat.Completions.ChatCompletionUserMessageParam;
+  assert.equal(lastUserMessage.content, '@alice: @RocketBot 查入口');
+});
+
 test('Orchestrator 在显式请求已安装但未启用的 skill 时应直接提示', async () => {
   const registry = createSkillRegistry([{
     name: 'code-lookup',

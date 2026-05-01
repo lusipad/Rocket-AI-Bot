@@ -132,6 +132,14 @@ export interface OrchestratorTrace {
 export interface OrchestratorHandleOptions {
   requestId?: string;
   trace?: OrchestratorTrace;
+  selectedSkills?: ResolvedSkillSelection;
+}
+
+export interface ResolvedSkillSelection {
+  skills: SkillDefinition[];
+  skillSources: Record<string, SkillActivationSource>;
+  cleanedMessage: string;
+  disabledSkillNames: string[];
 }
 
 export interface ModelModePreview {
@@ -253,7 +261,9 @@ export class Orchestrator {
       return skillHelpReply;
     }
 
-    const resolvedSkills = resolveRequestedSkills(userId, messageAfterModeCommand, this.skillRegistry);
+    const resolvedSkills = options.selectedSkills && !modeCommand.action
+      ? options.selectedSkills
+      : resolveRequestedSkills(userId, messageAfterModeCommand, this.skillRegistry);
     const activeSkills = [...resolvedSkills.skills];
     const skillSources = { ...resolvedSkills.skillSources };
     syncTrace(trace, activeSkills, skillSources, new Set<string>(), 0);
@@ -875,12 +885,7 @@ export function resolveRequestedSkills(
   userId: string,
   message: string,
   skillRegistry: SkillRegistry,
-): {
-  skills: SkillDefinition[];
-  skillSources: Record<string, SkillActivationSource>;
-  cleanedMessage: string;
-  disabledSkillNames: string[];
-} {
+): ResolvedSkillSelection {
   const explicitMatch = skillRegistry.findExplicitSkills(message);
   const naturalMatch = skillRegistry.findNaturalLanguageSkills(explicitMatch.cleanedMessage);
   const skillsByName = new Map<string, SkillDefinition>();

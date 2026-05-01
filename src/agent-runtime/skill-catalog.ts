@@ -25,6 +25,7 @@ export interface AgentSkillCatalog {
   getManifest(name: string): AgentSkillManifest | undefined;
   load(name: string): AgentSkillDetail | undefined;
   matchExplicit(input: string): AgentSkillMatch;
+  matchNaturalLanguage(input: string): AgentSkillMatch;
 }
 
 export class ProjectSkillCatalog implements AgentSkillCatalog {
@@ -63,6 +64,10 @@ export class ProjectSkillCatalog implements AgentSkillCatalog {
 
   matchExplicit(input: string): AgentSkillMatch {
     return toAgentSkillMatch(this.registry.findExplicitSkills(input));
+  }
+
+  matchNaturalLanguage(input: string): AgentSkillMatch {
+    return toAgentSkillMatch(this.registry.findNaturalLanguageSkills(input));
   }
 }
 

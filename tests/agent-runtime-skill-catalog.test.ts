@@ -65,6 +65,24 @@ test('ProjectSkillCatalog 应支持显式 skill 匹配并返回清理后的输�
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('ProjectSkillCatalog 应支持自然语言 skill 匹配', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-agent-skill-'));
+  const skillsRoot = path.join(root, 'skills');
+  const statePath = path.join(root, 'skill-state.json');
+  writeSkill(skillsRoot, 'code-lookup', '查询代码', 'search_code read_file', '完整代码说明');
+
+  const catalog = new ProjectSkillCatalog(new SkillRegistry(skillsRoot, undefined, statePath));
+  const match = catalog.matchNaturalLanguage('请用 code-lookup 看下 src/index.ts');
+
+  assert.equal(match.cleanedInput, '看下 src/index.ts');
+  assert.deepEqual(match.disabledSkillNames, []);
+  assert.equal(match.skills.length, 1);
+  assert.equal(match.skills[0].name, 'code-lookup');
+  assert.equal(match.skills[0].instructions, '完整代码说明');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('SkillRuntime 应路由启用的显式 skill', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-agent-skill-'));
   const skillsRoot = path.join(root, 'skills');
@@ -78,10 +96,32 @@ test('SkillRuntime 应路由启用的显式 skill', () => {
 
   assert.equal(route.kind, 'skill');
   assert.equal(route.cleanedInput, '查 PR 123');
+  assert.deepEqual(route.skillSources, { 'ado-lookup': 'explicit' });
   assert.deepEqual(route.disabledSkillNames, []);
   assert.equal(route.skills.length, 1);
   assert.equal(route.skills[0].name, 'ado-lookup');
   assert.equal(route.skills[0].instructions, '完整 ADO 说明');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('SkillRuntime 应路由自然语言显式 skill', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-agent-skill-'));
+  const skillsRoot = path.join(root, 'skills');
+  const statePath = path.join(root, 'skill-state.json');
+  writeSkill(skillsRoot, 'code-lookup', '查询代码', 'search_code read_file', '完整代码说明');
+
+  const runtime = new SkillRuntime(
+    new ProjectSkillCatalog(new SkillRegistry(skillsRoot, undefined, statePath)),
+  );
+  const route = runtime.route({ input: '请用 code-lookup 查入口' });
+
+  assert.equal(route.kind, 'skill');
+  assert.equal(route.cleanedInput, '查入口');
+  assert.deepEqual(route.skillSources, { 'code-lookup': 'explicit' });
+  assert.deepEqual(route.disabledSkillNames, []);
+  assert.equal(route.skills.length, 1);
+  assert.equal(route.skills[0].name, 'code-lookup');
 
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -99,6 +139,27 @@ test('SkillRuntime 应报告被禁用的显式 skill', () => {
 
   assert.equal(route.kind, 'disabled_skill');
   assert.equal(route.cleanedInput, '查入口');
+  assert.deepEqual(route.skillSources, {});
+  assert.deepEqual(route.disabledSkillNames, ['code-lookup']);
+  assert.deepEqual(route.skills, []);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('SkillRuntime 应报告被禁用的自然语言显式 skill', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-agent-skill-'));
+  const skillsRoot = path.join(root, 'skills');
+  const statePath = path.join(root, 'skill-state.json');
+  writeSkill(skillsRoot, 'code-lookup', '查询代码', 'search_code read_file', '完整代码说明');
+
+  const registry = new SkillRegistry(skillsRoot, undefined, statePath);
+  registry.setEnabled('code-lookup', false);
+  const runtime = new SkillRuntime(new ProjectSkillCatalog(registry));
+  const route = runtime.route({ input: '请用 code-lookup 查入口' });
+
+  assert.equal(route.kind, 'disabled_skill');
+  assert.equal(route.cleanedInput, '查入口');
+  assert.deepEqual(route.skillSources, {});
   assert.deepEqual(route.disabledSkillNames, ['code-lookup']);
   assert.deepEqual(route.skills, []);
 
@@ -118,6 +179,7 @@ test('SkillRuntime 没有显式 skill 时应回退', () => {
 
   assert.equal(route.kind, 'fallback');
   assert.equal(route.cleanedInput, '查入口');
+  assert.deepEqual(route.skillSources, {});
   assert.deepEqual(route.disabledSkillNames, []);
   assert.deepEqual(route.skills, []);
 
@@ -196,6 +258,97 @@ test('AgentRuntime 应通过真实 SkillRegistry 接线优先处理显式 skill'
 
   assert.equal(orchestratorCalled, true);
   assert.equal(capabilityCalled, false);
+  assert.equal(response.text, 'skill reply');
+  assert.deepEqual(response.trace.activeSkills, ['code-lookup']);
+  assert.deepEqual(response.trace.usedTools, ['read_file']);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('AgentRuntime 应通过真实 SkillRegistry 接线优先处理自然语言显式 skill', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-agent-skill-'));
+  const skillsRoot = path.join(root, 'skills');
+  const statePath = path.join(root, 'skill-state.json');
+  writeSkill(skillsRoot, 'code-lookup', '查询代码', 'search_code read_file', '完整代码说明');
+
+  let orchestratorMessage = '';
+  let selectedCleanedMessage = '';
+  let capabilityCalled = false;
+  const skillRuntime = new SkillRuntime(
+    new ProjectSkillCatalog(new SkillRegistry(skillsRoot, undefined, statePath)),
+  );
+  const agentRuntime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-5.5' };
+    },
+    async handle(
+      _userId: string,
+      _username: string,
+      message: string,
+      _conversation: unknown[],
+      _images: string[],
+      _requestContext: unknown,
+      options: {
+        trace?: OrchestratorTrace;
+        selectedSkills?: {
+          cleanedMessage: string;
+          skills: Array<{ name: string }>;
+          skillSources: Record<string, string>;
+        };
+      },
+    ) {
+      orchestratorMessage = message;
+      selectedCleanedMessage = options.selectedSkills?.cleanedMessage ?? '';
+      assert.deepEqual(options.selectedSkills?.skills.map((skill) => skill.name), ['code-lookup']);
+      assert.deepEqual(options.selectedSkills?.skillSources, { 'code-lookup': 'explicit' });
+      if (options.trace) {
+        options.trace.status = 'success';
+        options.trace.finishReason = 'reply';
+        options.trace.rounds = 1;
+        options.trace.activeSkills = ['code-lookup'];
+        options.trace.skillSources = { 'code-lookup': 'explicit' };
+        options.trace.usedTools = ['read_file'];
+      }
+      return 'skill reply';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-5.5';
+    },
+  } as never, [{
+    id: 'catch-all',
+    description: 'catch-all capability',
+    priority: 100,
+    canHandle: () => true,
+    async handle(request) {
+      capabilityCalled = true;
+      return {
+        requestId: request.id,
+        status: 'success',
+        text: 'capability reply',
+        messages: [{ type: 'text', text: 'capability reply' }],
+        model: 'none',
+        trace: {
+          activeSkills: [],
+          skillSources: {},
+          usedTools: [],
+          rounds: 0,
+          status: 'success',
+        },
+      };
+    },
+  }], { skillRuntime });
+
+  const response = await agentRuntime.handle({
+    id: 'req-real-natural-skill-runtime',
+    input: '请用 code-lookup 查入口',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(capabilityCalled, false);
+  assert.equal(orchestratorMessage, '请用 code-lookup 查入口');
+  assert.equal(selectedCleanedMessage, '查入口');
   assert.equal(response.text, 'skill reply');
   assert.deepEqual(response.trace.activeSkills, ['code-lookup']);
   assert.deepEqual(response.trace.usedTools, ['read_file']);
