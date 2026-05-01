@@ -328,7 +328,7 @@ async function main() {
     try {
       isDiscussionRequest = isDiscussionContextRequest(msg.text);
       const contextPolicy = contextPolicyStore.get();
-      const contextCount = resolveRecentMessageLimit(contextPolicy, contextScope, isDiscussionRequest);
+      contextCount = resolveRecentMessageLimit(contextPolicy, contextScope, isDiscussionRequest);
       publicChannelLookbackMs = resolvePublicChannelLookbackMs(
         contextPolicy,
         msg.roomType,

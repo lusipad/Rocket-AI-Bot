@@ -5,6 +5,7 @@ import type { Scheduler } from '../../scheduler/index.js';
 import type { SkillRegistry } from '../../skills/registry.js';
 import type { Logger } from '../../utils/logger.js';
 import type { RequestLogStore } from '../../observability/request-log-store.js';
+import type { DiscussionSummaryAdminService } from '../../discussion/admin-service.js';
 
 export function createStatusRoutes(
   llm: LLMClient,
@@ -12,6 +13,7 @@ export function createStatusRoutes(
   scheduler: Scheduler,
   skillRegistry: SkillRegistry,
   requestLogStore: RequestLogStore,
+  discussionAdminService: DiscussionSummaryAdminService,
   logger: Logger,
 ): Router {
   const router = Router();
@@ -42,6 +44,12 @@ export function createStatusRoutes(
         enabled: skills.filter((skill) => skill.enabled).length,
       },
       requests: requestLogStore.summarizeRecent(50),
+      context: {
+        policy: discussionAdminService.getPolicy(),
+        summaries: {
+          total: discussionAdminService.list(500).length,
+        },
+      },
     });
   });
 

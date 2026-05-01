@@ -84,7 +84,19 @@ export interface RequestLog {
   rounds: number;
   sources?: SourceRef[];
   context?: {
+    scope?: 'direct' | 'group' | 'thread';
+    discussionRequest?: boolean;
+    recentMessageCount?: number;
+    recentMessageLimit?: number;
+    summaryEnabled?: boolean;
+    summaryInjected?: boolean;
+    summaryScope?: 'room' | 'thread';
+    currentImageCount?: number;
+    recentImageCount?: number;
+    nativeWebSearchEnabled?: boolean;
+    webSearchUsed?: boolean;
     modelMode?: 'normal' | 'deep';
+    publicChannelLookbackMinutes?: number;
   };
 }
 
@@ -116,6 +128,32 @@ export interface DevToolsMetrics {
     sourceRate: number;
   };
   lastFinishedAt?: string;
+}
+
+export interface ContextScopePolicy {
+  recentMessageCount: number;
+  discussionRecentMessageCount: number;
+  summaryEnabled: boolean;
+}
+
+export interface ContextPolicy {
+  direct: ContextScopePolicy;
+  group: ContextScopePolicy;
+  thread: ContextScopePolicy;
+  publicChannel: {
+    lookbackMinutes: number;
+    discussionLookbackMinutes: number;
+  };
+}
+
+export interface DiscussionSummaryEntry {
+  roomId: string;
+  roomType?: 'c' | 'p' | 'd' | 'l';
+  threadId?: string;
+  summary: string;
+  updatedAt: string;
+  latestMessageAt?: string;
+  sourceMessageCount: number;
 }
 
 export interface InstallSkillRequest {
@@ -195,6 +233,48 @@ export async function getDevToolsMetrics(limit?: number): Promise<DevToolsMetric
   const search = new URLSearchParams();
   if (limit) search.set('limit', String(limit));
   return request(`/requests/metrics/devtools?${search.toString()}`);
+}
+
+export async function getContextPolicy(): Promise<ContextPolicy> {
+  return request('/context/policy');
+}
+
+export async function updateContextPolicy(policy: Partial<ContextPolicy>): Promise<ContextPolicy> {
+  return request('/context/policy', {
+    method: 'PUT',
+    body: JSON.stringify(policy),
+  });
+}
+
+export async function getDiscussionSummaries(limit?: number): Promise<DiscussionSummaryEntry[]> {
+  const search = new URLSearchParams();
+  if (limit) search.set('limit', String(limit));
+  return request(`/context/summaries?${search.toString()}`);
+}
+
+export async function clearDiscussionSummary(input: { roomId: string; threadId?: string }): Promise<{ ok: boolean; deleted: boolean }> {
+  return request('/context/summaries/clear', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function rebuildDiscussionSummary(input: {
+  roomId: string;
+  roomType?: 'c' | 'p' | 'd' | 'l';
+  threadId?: string;
+}): Promise<{
+  ok: boolean;
+  entry: DiscussionSummaryEntry;
+  recentMessageCount: number;
+  recentImageCount: number;
+  scope: 'direct' | 'group' | 'thread';
+  publicChannelLookbackMinutes?: number;
+}> {
+  return request('/context/summaries/rebuild', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getTasks(): Promise<Task[]> {

@@ -13,7 +13,7 @@ import { createSkillRoutes } from './api/skills.js';
 import { createRequestRoutes } from './api/requests.js';
 import { createContextRoutes } from './api/context.js';
 
-const ADMIN_ROUTE_ALIASES = ['/', '/tasks', '/skills', '/requests', '/logs', '/config'];
+const ADMIN_ROUTE_ALIASES = ['/', '/tasks', '/skills', '/context', '/requests', '/logs', '/config'];
 
 export interface WebContext {
   logger: Logger;
@@ -69,6 +69,7 @@ export function createWebServer(ctx: WebContext): ReturnType<typeof express> {
     ctx.scheduler,
     ctx.skillRegistry,
     ctx.requestLogStore,
+    ctx.discussionAdminService,
     ctx.logger,
   ));
   app.use('/api/skills', createSkillRoutes(ctx.skillRegistry, ctx.logger));

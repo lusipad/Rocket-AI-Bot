@@ -7,6 +7,7 @@ import TaskLogs from './pages/TaskLogs';
 import Config from './pages/Config';
 import Skills from './pages/Skills';
 import Requests from './pages/Requests';
+import ContextPage from './pages/Context';
 
 const style = `
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -75,6 +76,7 @@ export default function App() {
         <Link to="/">仪表盘</Link>
         <Link to="/tasks">任务</Link>
         <Link to="/skills">Skills</Link>
+        <Link to="/context">上下文</Link>
         <Link to="/requests">请求</Link>
         <Link to="/logs">日志</Link>
         <Link to="/config">配置</Link>
@@ -84,6 +86,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/skills" element={<Skills />} />
+          <Route path="/context" element={<ContextPage />} />
           <Route path="/requests" element={<Requests />} />
           <Route path="/logs" element={<TaskLogs />} />
           <Route path="/config" element={<Config />} />

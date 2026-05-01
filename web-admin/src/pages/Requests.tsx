@@ -173,6 +173,13 @@ export default function Requests() {
               <tr><td>Skills</td><td>{selected.activeSkills.join(', ') || '-'}</td></tr>
               <tr><td>Skill 来源</td><td>{formatSkillSources(selected)}</td></tr>
               <tr><td>Tools</td><td>{selected.usedTools.join(', ') || '-'}</td></tr>
+              <tr><td>上下文范围</td><td>{formatContextScope(selected.context?.scope)}</td></tr>
+              <tr><td>最近消息</td><td>{selected.context ? `${selected.context.recentMessageCount ?? 0} / ${selected.context.recentMessageLimit ?? 0}` : '-'}</td></tr>
+              <tr><td>讨论型请求</td><td>{selected.context?.discussionRequest ? '是' : '否'}</td></tr>
+              <tr><td>讨论摘要</td><td>{formatSummaryState(selected)}</td></tr>
+              <tr><td>图片</td><td>{selected.context ? `当前 ${selected.context.currentImageCount ?? 0} 张，历史 ${selected.context.recentImageCount ?? 0} 张` : '-'}</td></tr>
+              <tr><td>联网搜索</td><td>{formatWebSearchState(selected)}</td></tr>
+              <tr><td>公开频道回看</td><td>{selected.context?.publicChannelLookbackMinutes ? `${selected.context.publicChannelLookbackMinutes} 分钟` : '-'}</td></tr>
               <tr>
                 <td>Sources</td>
                 <td>
@@ -220,4 +227,41 @@ function isRequestTypeFilter(value: string): value is RequestTypeFilter {
     'general',
     'command',
   ].includes(value);
+}
+
+function formatContextScope(scope: 'direct' | 'group' | 'thread' | undefined): string {
+  switch (scope) {
+    case 'direct':
+      return '私聊';
+    case 'thread':
+      return 'Thread';
+    case 'group':
+      return '房间';
+    default:
+      return '-';
+  }
+}
+
+function formatSummaryState(item: RequestLog): string {
+  if (!item.context) {
+    return '-';
+  }
+
+  if (!item.context.summaryEnabled) {
+    return '已关闭';
+  }
+
+  if (!item.context.summaryInjected) {
+    return '启用，但本次未注入';
+  }
+
+  return item.context.summaryScope === 'thread' ? '已注入 thread 摘要' : '已注入房间摘要';
+}
+
+function formatWebSearchState(item: RequestLog): string {
+  if (!item.context?.nativeWebSearchEnabled) {
+    return '未启用';
+  }
+
+  return item.context.webSearchUsed ? '已启用，且本次已使用' : '已启用，但本次未使用';
 }

@@ -9,6 +9,9 @@ import { createWebServer } from '../src/web/server.ts';
 import { Scheduler, type TaskRunner } from '../src/scheduler/index.ts';
 import { TaskPersistence } from '../src/scheduler/persistence.ts';
 import { RequestLogStore } from '../src/observability/request-log-store.ts';
+import { DiscussionSummaryAdminService } from '../src/discussion/admin-service.ts';
+import { DiscussionSummaryStore } from '../src/discussion/summary-store.ts';
+import { ContextPolicyStore } from '../src/context/policy-store.ts';
 
 function createLogger() {
   return {
@@ -98,10 +101,43 @@ function createGitSkillRepo(root: string, relativeDir = '.'): string {
   return repoDir;
 }
 
+function createDiscussionAdminService(root: string): DiscussionSummaryAdminService {
+  const summaryStore = new DiscussionSummaryStore(path.join(root, 'summaries'));
+  const policyStore = new ContextPolicyStore(path.join(root, 'context-policy.json'));
+
+  return new DiscussionSummaryAdminService(
+    summaryStore,
+    policyStore,
+    {
+      async getRecentMessages() {
+        return [
+          { role: 'user', username: 'alice', text: '先做 A', images: [] },
+          { role: 'user', username: 'bob', text: '补回滚预案', images: [] },
+        ];
+      },
+    } as never,
+    {
+      async chat() {
+        return {
+          choices: [
+            {
+              message: {
+                content: '结论：先做 A，并补回滚预案。',
+              },
+            },
+          ],
+        };
+      },
+    } as never,
+    createLogger() as never,
+  );
+}
+
 async function withServer<T>(
   scheduler: Scheduler,
   skillRegistry: SkillRegistry,
   requestLogStore: RequestLogStore,
+  discussionAdminService: DiscussionSummaryAdminService,
   run: (baseUrl: string) => Promise<T>,
 ): Promise<T> {
   const app = createWebServer({
@@ -137,6 +173,7 @@ async function withServer<T>(
     } as never,
     skillRegistry,
     requestLogStore,
+    discussionAdminService,
     webSecret: 'secret-token',
   });
 
@@ -167,7 +204,7 @@ test('健康检查接口不应要求鉴权', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/health`);
     assert.equal(response.status, 200);
 
@@ -184,7 +221,7 @@ test('管理端根路径与旧路径别名应重定向到 /admin', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const rootResponse = await fetch(`${baseUrl}/`, { redirect: 'manual' });
     assert.equal(rootResponse.status, 302);
     assert.equal(rootResponse.headers.get('location'), '/admin');
@@ -203,7 +240,7 @@ test('状态接口应支持探测 LLM API 兼容模式', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/status/llm-api-mode-probe`, {
       method: 'POST',
       headers: {
@@ -237,7 +274,7 @@ test('任务局部更新时应保留已有 cron 和 room', async () => {
     enabled: true,
   });
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks/daily-report`, {
       method: 'PUT',
       headers: {
@@ -267,7 +304,7 @@ test('创建任务时应接受独立 prompt 字段', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: {
@@ -303,7 +340,7 @@ test('任务模板接口应返回内置 DevTools 模板', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks/templates`, {
       headers: {
         Authorization: 'Bearer secret-token',
@@ -330,7 +367,7 @@ test('应支持从任务模板创建调度任务', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks/from-template`, {
       method: 'POST',
       headers: {
@@ -369,7 +406,7 @@ test('从未知任务模板创建任务时应返回 404', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks/from-template`, {
       method: 'POST',
       headers: {
@@ -415,7 +452,7 @@ test('手动执行任务应返回并记录请求追踪信息', async () => {
     enabled: false,
   });
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/tasks/pipeline-health/run`, {
       method: 'POST',
       headers: {
@@ -459,7 +496,7 @@ test('skills 接口应返回已装载列表并支持切换启用状态', async (
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const listResponse = await fetch(`${baseUrl}/api/skills`, {
       headers: {
         Authorization: 'Bearer secret-token',
@@ -523,7 +560,7 @@ test('skills reload 接口应重新扫描新安装的 skill', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const newSkillDir = path.join(root, 'skills', 'artifact-writer');
     fs.mkdirSync(newSkillDir, { recursive: true });
     fs.writeFileSync(
@@ -573,7 +610,7 @@ test('skills 详情接口应返回指定 skill 的完整信息', async () => {
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/skills/code-lookup`, {
       headers: {
         Authorization: 'Bearer secret-token',
@@ -597,7 +634,7 @@ test('skills 卸载接口应移除项目 skill 并返回最新列表', async () 
   const skillRegistry = createSkillRegistry(root);
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/skills/ado-lookup`, {
       method: 'DELETE',
       headers: {
@@ -629,7 +666,7 @@ test('skills 安装接口应从 git 仓库安装 skill', async () => {
   const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
   const repoDir = createGitSkillRepo(root, 'packages/external-skill');
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/skills/install`, {
       method: 'POST',
       headers: {
@@ -727,7 +764,7 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
     rounds: 1,
   });
 
-  await withServer(scheduler, skillRegistry, requestLogStore, async (baseUrl) => {
+  await withServer(scheduler, skillRegistry, requestLogStore, createDiscussionAdminService(root), async (baseUrl) => {
     const listResponse = await fetch(`${baseUrl}/api/requests?kind=chat&username=alice`, {
       headers: {
         Authorization: 'Bearer secret-token',
@@ -810,6 +847,101 @@ test('requests 接口应返回请求记录列表、详情和摘要', async () =>
         sourceRate: 1,
       },
       lastFinishedAt: '2026-04-26T09:00:05.000Z',
+    });
+  });
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('context 接口应返回并更新上下文策略，同时支持摘要清空与重建', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-context-'));
+  const scheduler = createScheduler(root);
+  const skillRegistry = createSkillRegistry(root);
+  const requestLogStore = new RequestLogStore(path.join(root, 'requests'));
+  const discussionAdminService = createDiscussionAdminService(root);
+
+  const store = new DiscussionSummaryStore(path.join(root, 'summaries'));
+  store.save({
+    roomId: 'GENERAL',
+    roomType: 'c',
+    summary: '旧摘要',
+    updatedAt: '2026-04-26T10:00:00.000Z',
+    sourceMessageCount: 3,
+  });
+
+  await withServer(scheduler, skillRegistry, requestLogStore, discussionAdminService, async (baseUrl) => {
+    const policyResponse = await fetch(`${baseUrl}/api/context/policy`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(policyResponse.status, 200);
+    const policy = await policyResponse.json();
+    assert.equal(policy.group.recentMessageCount, 40);
+    assert.equal(policy.publicChannel.lookbackMinutes, 45);
+
+    const updateResponse = await fetch(`${baseUrl}/api/context/policy`, {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        group: {
+          recentMessageCount: 24,
+          summaryEnabled: false,
+        },
+      }),
+    });
+    assert.equal(updateResponse.status, 200);
+    const updated = await updateResponse.json();
+    assert.equal(updated.group.recentMessageCount, 24);
+    assert.equal(updated.group.summaryEnabled, false);
+    assert.equal(updated.group.discussionRecentMessageCount, 80);
+    assert.equal(updated.publicChannel.lookbackMinutes, 45);
+
+    const summariesResponse = await fetch(`${baseUrl}/api/context/summaries`, {
+      headers: {
+        Authorization: 'Bearer secret-token',
+      },
+    });
+    assert.equal(summariesResponse.status, 200);
+    const summaries = await summariesResponse.json();
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].summary, '旧摘要');
+
+    const rebuildResponse = await fetch(`${baseUrl}/api/context/summaries/rebuild`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        roomId: 'GENERAL',
+        roomType: 'c',
+      }),
+    });
+    assert.equal(rebuildResponse.status, 200);
+    const rebuild = await rebuildResponse.json();
+    assert.equal(rebuild.ok, true);
+    assert.equal(rebuild.entry.summary, '结论：先做 A，并补回滚预案。');
+    assert.equal(rebuild.recentMessageCount, 2);
+
+    const clearResponse = await fetch(`${baseUrl}/api/context/summaries/clear`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        roomId: 'GENERAL',
+      }),
+    });
+    assert.equal(clearResponse.status, 200);
+    const cleared = await clearResponse.json();
+    assert.deepEqual(cleared, {
+      ok: true,
+      deleted: true,
     });
   });
 

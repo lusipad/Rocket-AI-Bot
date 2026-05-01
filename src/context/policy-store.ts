@@ -61,7 +61,7 @@ export class ContextPolicyStore {
   }
 
   set(input: Partial<ContextPolicy>): ContextPolicy {
-    this.policy = normalizeContextPolicy(input);
+    this.policy = normalizeContextPolicy(mergeContextPolicy(this.policy, input));
     this.save();
     return this.get();
   }
@@ -174,4 +174,32 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
 
 function clonePolicy(policy: ContextPolicy): ContextPolicy {
   return JSON.parse(JSON.stringify(policy)) as ContextPolicy;
+}
+
+function mergeContextPolicy(
+  current: ContextPolicy,
+  patch: Partial<ContextPolicy> | undefined,
+): ContextPolicy {
+  if (!patch) {
+    return clonePolicy(current);
+  }
+
+  return {
+    direct: {
+      ...current.direct,
+      ...(patch.direct ?? {}),
+    },
+    group: {
+      ...current.group,
+      ...(patch.group ?? {}),
+    },
+    thread: {
+      ...current.thread,
+      ...(patch.thread ?? {}),
+    },
+    publicChannel: {
+      ...current.publicChannel,
+      ...(patch.publicChannel ?? {}),
+    },
+  };
 }

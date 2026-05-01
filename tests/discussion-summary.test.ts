@@ -39,6 +39,31 @@ test('DiscussionSummaryStore 应按 room/thread 维度读写摘要', () => {
     updatedAt: '2026-04-26T09:00:00.000Z',
     sourceMessageCount: 3,
   });
+
+  assert.deepEqual(store.list(), [
+    {
+      roomId: 'GENERAL',
+      threadId: undefined,
+      roomType: undefined,
+      summary: '这是房间摘要',
+      updatedAt: '2026-04-26T09:00:00.000Z',
+      latestMessageAt: undefined,
+      sourceMessageCount: 3,
+    },
+    {
+      roomId: 'GENERAL',
+      threadId: 'thread-1',
+      roomType: undefined,
+      summary: '这是 thread 摘要',
+      updatedAt: '2026-04-26T08:00:00.000Z',
+      latestMessageAt: undefined,
+      sourceMessageCount: 6,
+    },
+  ]);
+
+  assert.equal(store.delete({ roomId: 'GENERAL', threadId: 'thread-1' }), true);
+  assert.equal(store.get({ roomId: 'GENERAL', threadId: 'thread-1' }), null);
+  assert.equal(store.delete({ roomId: 'GENERAL', threadId: 'thread-1' }), false);
 });
 
 test('DiscussionSummaryService 应只在讨论型请求里注入缓存摘要', () => {

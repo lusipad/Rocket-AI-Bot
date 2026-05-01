@@ -384,7 +384,7 @@ function normalizeContext(context: RequestLogContext | undefined): RequestLogCon
       : 'group',
     discussionRequest: Boolean(context.discussionRequest),
     recentMessageCount: Math.max(0, Math.round(context.recentMessageCount)),
-    recentMessageLimit: Math.max(1, Math.round(context.recentMessageLimit)),
+    recentMessageLimit: Math.max(0, Math.round(context.recentMessageLimit)),
     summaryEnabled: Boolean(context.summaryEnabled),
     summaryInjected: Boolean(context.summaryInjected),
     summaryScope: context.summaryScope === 'room' || context.summaryScope === 'thread'
