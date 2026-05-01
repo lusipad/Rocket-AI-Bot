@@ -6,6 +6,7 @@ import type { SkillRegistry } from '../../skills/registry.js';
 import type { Logger } from '../../utils/logger.js';
 import type { RequestLogStore } from '../../observability/request-log-store.js';
 import type { DiscussionSummaryAdminService } from '../../discussion/admin-service.js';
+import type { AgentDefinition } from '../../agent-core/definition.js';
 
 export function createStatusRoutes(
   llm: LLMClient,
@@ -14,6 +15,7 @@ export function createStatusRoutes(
   skillRegistry: SkillRegistry,
   requestLogStore: RequestLogStore,
   discussionAdminService: DiscussionSummaryAdminService,
+  agentDefinition: AgentDefinition,
   logger: Logger,
 ): Router {
   const router = Router();
@@ -35,6 +37,15 @@ export function createStatusRoutes(
       model: llm.getModel(),
       deepModel: llm.getDeepModel(),
       apiMode: llm.getApiMode(),
+      agent: {
+        id: agentDefinition.id,
+        name: agentDefinition.name,
+        model: agentDefinition.model,
+        deepModel: agentDefinition.deepModel,
+        channels: agentDefinition.channels,
+        skillPolicy: agentDefinition.skillPolicy,
+        contextPolicyRef: agentDefinition.contextPolicyRef,
+      },
       scheduler: {
         total: tasks.length,
         active: tasks.filter(t => t.enabled).length,

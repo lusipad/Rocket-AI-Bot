@@ -12,6 +12,7 @@ import { RequestLogStore } from '../src/observability/request-log-store.ts';
 import { DiscussionSummaryAdminService } from '../src/discussion/admin-service.ts';
 import { DiscussionSummaryStore } from '../src/discussion/summary-store.ts';
 import { ContextPolicyStore } from '../src/context/policy-store.ts';
+import { createDefaultAgentDefinition } from '../src/agent-core/definition.ts';
 
 function createLogger() {
   return {
@@ -174,6 +175,10 @@ async function withServer<T>(
     skillRegistry,
     requestLogStore,
     discussionAdminService,
+    agentDefinition: createDefaultAgentDefinition({
+      model: 'gpt-4',
+      deepModel: 'gpt-4-pro',
+    }),
     webSecret: 'secret-token',
   });
 

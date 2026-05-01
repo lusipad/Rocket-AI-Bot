@@ -41,6 +41,7 @@ export default function Dashboard() {
             <tr><td>默认模型</td><td>{status.model}</td></tr>
             <tr><td>深度模型</td><td>{status.deepModel ?? '-'}</td></tr>
             <tr><td>API 模式</td><td>{status.apiMode ?? '-'}</td></tr>
+            <tr><td>Agent</td><td>{status.agent ? `${status.agent.name} (${status.agent.id})` : '-'}</td></tr>
             <tr><td>调度任务</td><td>{status.scheduler?.active}/{status.scheduler?.total} 活跃</td></tr>
             <tr><td>Skills</td><td>{status.skills?.enabled}/{status.skills?.installed} 启用</td></tr>
             <tr><td>最近请求</td><td>{status.requests?.success}/{status.requests?.total} 成功</td></tr>

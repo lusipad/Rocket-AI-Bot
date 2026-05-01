@@ -161,6 +161,7 @@ export default function Requests() {
               <tr><td>类型</td><td>{selected.kind}</td></tr>
               <tr><td>状态</td><td>{selected.status}</td></tr>
               <tr><td>完成原因</td><td>{selected.finishReason ?? '-'}</td></tr>
+              <tr><td>Agent</td><td>{selected.agentName ? `${selected.agentName} (${selected.agentId})` : (selected.agentId ?? '-')}</td></tr>
               <tr><td>请求类型</td><td>{selected.requestType ?? '-'}</td></tr>
               <tr><td>模式</td><td>{selected.context?.modelMode === 'deep' ? '深度' : '普通'}</td></tr>
               <tr><td>模型</td><td>{selected.model}</td></tr>

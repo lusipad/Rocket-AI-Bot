@@ -1,6 +1,7 @@
 import type { RequestContext } from '../bot/message-handler.js';
 import type { SkillActivationSource } from '../agent/orchestrator.js';
 import type { ToolSource } from '../tools/source.js';
+import type { AgentIdentity } from './definition.js';
 
 export interface AgentActor {
   id: string;
@@ -58,6 +59,7 @@ export type AgentRequestType =
   | 'general';
 
 export interface AgentTrace {
+  agentId?: string;
   activeSkills: string[];
   skillSources: Record<string, SkillActivationSource>;
   usedTools: string[];
@@ -79,6 +81,7 @@ export interface AgentResponseMessage {
 
 export interface AgentResponse {
   requestId: string;
+  agent?: AgentIdentity;
   status: 'success' | 'error';
   text: string;
   messages: AgentResponseMessage[];

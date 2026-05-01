@@ -59,6 +59,8 @@ export interface SkillDetail extends Skill {
 
 export interface RequestLog {
   requestId: string;
+  agentId?: string;
+  agentName?: string;
   kind: 'chat' | 'scheduler';
   status: 'success' | 'error' | 'rejected';
   finishReason?: string;

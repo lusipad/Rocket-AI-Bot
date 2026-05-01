@@ -28,6 +28,8 @@ export interface RequestLogContext {
 
 export interface RequestLogEntry {
   requestId: string;
+  agentId?: string;
+  agentName?: string;
   kind: RequestLogKind;
   status: RequestLogStatus;
   finishReason?: string;
@@ -300,6 +302,8 @@ function normalizeEntry(entry: RequestLogEntry): RequestLogEntry {
   return {
     ...entry,
     prompt: truncateRequired(entry.prompt, 4000),
+    agentId: normalizeOptionalText(entry.agentId, 80),
+    agentName: normalizeOptionalText(entry.agentName, 120),
     reply: truncate(entry.reply, 4000),
     error: truncate(entry.error, 2000),
     requestType: isAgentRequestType(entry.requestType) ? entry.requestType : undefined,
@@ -311,6 +315,14 @@ function normalizeEntry(entry: RequestLogEntry): RequestLogEntry {
     sources: normalizeSources(entry.sources),
     context: normalizeContext(entry.context),
   };
+}
+
+function normalizeOptionalText(value: string | undefined, maxLength: number): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  return truncateRequired(value.trim(), maxLength);
 }
 
 function truncate(value: string | undefined, maxLength: number): string | undefined {

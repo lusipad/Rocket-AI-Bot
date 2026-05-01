@@ -17,6 +17,11 @@ import type {
 import { CapabilityRegistry, RequestRouter } from './capabilities.js';
 import { classifyAgentInteraction } from './classification.js';
 import { dedupeSources } from '../tools/source.js';
+import {
+  createDefaultAgentDefinition,
+  toAgentIdentity,
+  type AgentDefinition,
+} from './definition.js';
 
 export interface AgentRuntimeSkillRoute {
   kind: 'skill' | 'disabled_skill' | 'fallback';
@@ -28,6 +33,7 @@ export interface AgentRuntimeSkillRoute {
 }
 
 export interface AgentRuntimeOptions {
+  agentDefinition?: AgentDefinition;
   skillRuntime?: {
     route(request: Pick<AgentRequest, 'input'>): AgentRuntimeSkillRoute;
   };
@@ -35,6 +41,7 @@ export interface AgentRuntimeOptions {
 
 export class AgentRuntime {
   private readonly router: RequestRouter;
+  private readonly agentDefinition: AgentDefinition;
   private readonly skillRuntime?: AgentRuntimeOptions['skillRuntime'];
 
   constructor(
@@ -43,6 +50,10 @@ export class AgentRuntime {
     capabilities: AgentCapability[] = [],
     options: AgentRuntimeOptions = {},
   ) {
+    this.agentDefinition = options.agentDefinition ?? createDefaultAgentDefinition({
+      model: llm.getModel(),
+      deepModel: typeof llm.getDeepModel === 'function' ? llm.getDeepModel() : undefined,
+    });
     this.skillRuntime = options.skillRuntime;
     const registry = new CapabilityRegistry();
     for (const capability of capabilities) {
@@ -72,15 +83,16 @@ export class AgentRuntime {
       return annotateResponse(
         request,
         createDisabledSkillResponse(request, this.llm.getModel(), skillRoute.disabledSkillNames),
+        this.agentDefinition,
       );
     }
     if (skillRoute?.kind === 'skill') {
       const response = await this.handleWithOrchestrator(request, skillRoute);
-      return annotateResponse(request, response);
+      return annotateResponse(request, response, this.agentDefinition);
     }
 
     const response = await this.router.handle(request);
-    return annotateResponse(request, response);
+    return annotateResponse(request, response, this.agentDefinition);
   }
 
   private async handleWithOrchestrator(
@@ -111,6 +123,7 @@ export class AgentRuntime {
 
     return {
       requestId: request.id,
+      agent: toAgentIdentity(this.agentDefinition),
       status: trace.status,
       text: reply,
       messages: [{ type: 'text', text: reply }],
@@ -189,19 +202,26 @@ function toAgentTrace(trace: OrchestratorTrace): AgentTrace {
   };
 }
 
-function annotateResponse(request: AgentRequest, response: AgentResponse): AgentResponse {
+function annotateResponse(
+  request: AgentRequest,
+  response: AgentResponse,
+  agentDefinition: AgentDefinition,
+): AgentResponse {
   const requestType = classifyAgentInteraction(request, response);
   const sources = dedupeSources([
     ...(response.sources ?? []),
     ...(response.trace.sources ?? []),
   ]);
+  const agent = response.agent ?? toAgentIdentity(agentDefinition);
 
   return {
     ...response,
+    agent,
     requestType,
     sources,
     trace: {
       ...response.trace,
+      agentId: agent.id,
       requestType,
       sources,
     },

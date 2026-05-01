@@ -1,12 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentRuntime } from '../src/agent-core/runtime.ts';
+import { createDefaultAgentDefinition } from '../src/agent-core/definition.ts';
 import { CapabilityRegistry } from '../src/agent-core/capabilities.ts';
 import { createAzureDevOpsFileUrlCapability } from '../src/agent-core/capabilities/azure-devops-file-url.ts';
 import { createPublicRealtimeWebSearchCapability } from '../src/agent-core/capabilities/public-realtime-web-search.ts';
 import { toRocketChatAgentRequest, toSchedulerAgentRequest } from '../src/adapters/rocketchat/message-normalizer.ts';
 import type { BotMessage } from '../src/bot/message-handler.ts';
 import type { OrchestratorTrace } from '../src/agent/orchestrator.ts';
+
+test('默认 AgentDefinition 应描述当前 RocketBot agent 的通用能力边界', () => {
+  const definition = createDefaultAgentDefinition({
+    model: 'gpt-5.5',
+    deepModel: 'gpt-5.5-pro',
+  });
+
+  assert.equal(definition.id, 'rocketbot-default');
+  assert.equal(definition.name, 'RocketBot Default Agent');
+  assert.equal(definition.model, 'gpt-5.5');
+  assert.equal(definition.deepModel, 'gpt-5.5-pro');
+  assert.deepEqual(definition.channels, ['rocketchat', 'scheduler']);
+  assert.equal(definition.skillPolicy.mode, 'enabled_project_skills');
+  assert.equal(definition.contextPolicyRef, 'default');
+  assert.match(definition.instructions, /Rocket\.Chat/);
+});
 
 test('AgentRuntime 应通过通用 AgentRequest 调用现有 Orchestrator', async () => {
   const captured: Record<string, unknown> = {};
@@ -72,6 +89,8 @@ test('AgentRuntime 应通过通用 AgentRequest 调用现有 Orchestrator', asyn
   assert.deepEqual(response.sources, [{ type: 'file', title: 'src/index.ts', ref: 'src/index.ts:10' }]);
   assert.deepEqual(response.trace.activeSkills, ['code-lookup']);
   assert.deepEqual(response.trace.usedTools, ['read_file']);
+  assert.equal(response.agent?.id, 'rocketbot-default');
+  assert.equal(response.trace.agentId, 'rocketbot-default');
   assert.deepEqual(captured.handle, {
     userId: 'u1',
     username: 'alice',
@@ -88,6 +107,62 @@ test('AgentRuntime 应通过通用 AgentRequest 调用现有 Orchestrator', asyn
     },
     requestId: 'req-1',
   });
+});
+
+test('AgentRuntime 应支持注入自定义 AgentDefinition 并写入响应 trace', async () => {
+  const runtime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-custom' };
+    },
+    async handle(
+      _userId: string,
+      _username: string,
+      _message: string,
+      _conversation: unknown[],
+      _images: string[],
+      _requestContext: unknown,
+      options: { trace?: OrchestratorTrace },
+    ) {
+      if (options.trace) {
+        options.trace.status = 'success';
+        options.trace.finishReason = 'reply';
+        options.trace.rounds = 1;
+      }
+      return 'custom reply';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-custom';
+    },
+  } as never, [], {
+    agentDefinition: {
+      id: 'devops-agent',
+      name: 'DevOps Agent',
+      description: 'Handles DevOps workflows',
+      model: 'gpt-custom',
+      channels: ['rocketchat'],
+      instructions: '只处理 DevOps 场景。',
+      skillPolicy: {
+        mode: 'allowlist',
+        allowedSkills: ['ado-lookup'],
+      },
+      contextPolicyRef: 'default',
+    },
+  });
+
+  const response = await runtime.handle({
+    id: 'req-custom-agent',
+    input: '查一下 PR',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+
+  assert.equal(response.text, 'custom reply');
+  assert.deepEqual(response.agent, {
+    id: 'devops-agent',
+    name: 'DevOps Agent',
+  });
+  assert.equal(response.trace.agentId, 'devops-agent');
 });
 
 test('AgentRuntime 应优先使用已注册 capability，再回退到 Orchestrator', async () => {

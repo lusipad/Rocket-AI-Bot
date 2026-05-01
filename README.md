@@ -12,6 +12,7 @@
 - 可选调用本地 Codex CLI 处理复杂编程任务
 - 查询 Azure DevOps Server 的工作项、PR 和流水线
 - 显式深度模式：`|deep` 使用深度模型，`|normal` / `|deep off` 退出
+- 通用 Agent Runtime 基础：默认 RocketBot Agent 已抽象为可观测的 Agent 定义
 - 项目级 Skills：启动只加载元数据，按需读取 `SKILL.md` 正文
 - Web 管理页、Skill 管理、上下文治理和定时任务调度
 
@@ -156,6 +157,12 @@ Rocket.Chat 对 `/` 前缀有限制，推荐使用 `|` 前缀；`/` 前缀仍作
 - 可在管理页查看、清空或重建某个房间/thread 的摘要缓存
 
 请求详情页会展示本次实际使用的上下文范围、最近消息数量、摘要是否注入、图片数量、联网搜索状态和模型模式。排查“为什么这次回答用了哪些上下文”时，优先看 `请求` 页面里的详情。
+
+## Agent Runtime
+
+当前默认 Agent 是 `rocketbot-default`，运行在 Rocket.Chat 和 scheduler 两个入口上。它仍然保持现有聊天体验：群聊需要 `@RocketBot`，私聊无需 `@`，定时任务继续走后台调度。
+
+这一层的目标是把模型、深度模型、渠道、skill 策略和上下文策略引用沉淀成通用 Agent 定义。管理端状态页和请求详情页会显示本次使用的 Agent，方便后续扩展为多 Agent、MCP tools 和更通用的 channel adapter。
 
 ## 验证命令
 
