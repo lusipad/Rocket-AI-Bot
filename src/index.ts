@@ -152,7 +152,7 @@ async function main() {
     defaultModel: llm.getModel(),
     defaultDeepModel: llm.getDeepModel(),
   });
-  const agentDefinition = agentRegistry.resolveForChannel('rocketchat');
+  const chatAgentDefinition = agentRegistry.resolveForChannel('rocketchat');
   const skillRegistry = new SkillRegistry(undefined, logger);
   const orchestrator = new Orchestrator(llm, registry, config, logger, skillRegistry);
   const skillRuntime = new SkillRuntime(new ProjectSkillCatalog(skillRegistry));
@@ -177,7 +177,7 @@ async function main() {
         toRequestContext(request),
       ),
     }),
-  ], { skillRuntime, agentDefinition });
+  ], { skillRuntime, agentRegistry });
   const requestLogStore = new RequestLogStore();
   const discussionSummaryStore = new DiscussionSummaryStore();
   const discussionSummaryService = new DiscussionSummaryService(discussionSummaryStore);
@@ -229,8 +229,8 @@ async function main() {
         triggerMessageId: msg.id,
         prompt: msg.text,
         reply: controlCommandReply.reply,
-        agentId: agentDefinition.id,
-        agentName: agentDefinition.name,
+        agentId: chatAgentDefinition.id,
+        agentName: chatAgentDefinition.name,
         requestType: 'command',
         sources: [],
         activeSkills: controlCommandReply.trace?.activeSkills ?? [],
@@ -267,8 +267,8 @@ async function main() {
         prompt: msg.text,
         reply: '正在处理上一条请求，请稍等...',
         error: '频道冷却中',
-        agentId: agentDefinition.id,
-        agentName: agentDefinition.name,
+        agentId: chatAgentDefinition.id,
+        agentName: chatAgentDefinition.name,
         requestType: 'general',
         sources: [],
         activeSkills: [],
@@ -299,8 +299,8 @@ async function main() {
         prompt: msg.text,
         reply,
         error: '用户限流',
-        agentId: agentDefinition.id,
-        agentName: agentDefinition.name,
+        agentId: chatAgentDefinition.id,
+        agentName: chatAgentDefinition.name,
         requestType: 'general',
         sources: [],
         activeSkills: [],
@@ -437,8 +437,8 @@ async function main() {
         prompt: msg.text,
         reply: displayReply,
         error: agentResponse.trace.error,
-        agentId: agentResponse.agent?.id ?? agentDefinition.id,
-        agentName: agentResponse.agent?.name ?? agentDefinition.name,
+        agentId: agentResponse.agent?.id ?? chatAgentDefinition.id,
+        agentName: agentResponse.agent?.name ?? chatAgentDefinition.name,
         requestType: agentResponse.requestType,
         sources: agentResponse.sources,
         activeSkills: agentResponse.trace.activeSkills,
@@ -496,8 +496,8 @@ async function main() {
         prompt: msg.text,
         reply: errorMessage,
         error: String(err),
-        agentId: agentResponse?.agent?.id ?? agentDefinition.id,
-        agentName: agentResponse?.agent?.name ?? agentDefinition.name,
+        agentId: agentResponse?.agent?.id ?? chatAgentDefinition.id,
+        agentName: agentResponse?.agent?.name ?? chatAgentDefinition.name,
         requestType: agentResponse?.requestType ?? 'general',
         sources: agentResponse?.sources ?? [],
         activeSkills: agentResponse?.trace.activeSkills ?? [],
@@ -568,8 +568,8 @@ async function main() {
         prompt: instruction,
         reply,
         error: agentResponse.trace.error,
-        agentId: agentResponse.agent?.id ?? agentDefinition.id,
-        agentName: agentResponse.agent?.name ?? agentDefinition.name,
+        agentId: agentResponse.agent?.id ?? agentRegistry.resolveForChannel('scheduler').id,
+        agentName: agentResponse.agent?.name ?? agentRegistry.resolveForChannel('scheduler').name,
         requestType: agentResponse.requestType,
         sources: agentResponse.sources,
         activeSkills: agentResponse.trace.activeSkills,
@@ -613,8 +613,8 @@ async function main() {
         taskTemplateId: task.templateId,
         prompt: task.prompt?.trim() || task.name,
         error: String(err),
-        agentId: agentResponse?.agent?.id ?? agentDefinition.id,
-        agentName: agentResponse?.agent?.name ?? agentDefinition.name,
+        agentId: agentResponse?.agent?.id ?? agentRegistry.resolveForChannel('scheduler').id,
+        agentName: agentResponse?.agent?.name ?? agentRegistry.resolveForChannel('scheduler').name,
         requestType: agentResponse?.requestType ?? 'scheduler',
         sources: agentResponse?.sources ?? [],
         activeSkills: agentResponse?.trace.activeSkills ?? [],

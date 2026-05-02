@@ -22,6 +22,7 @@ import {
   toAgentIdentity,
   type AgentDefinition,
 } from './definition.js';
+import type { AgentRegistry } from './registry.js';
 
 export interface AgentRuntimeSkillRoute {
   kind: 'skill' | 'disabled_skill' | 'fallback';
@@ -34,6 +35,7 @@ export interface AgentRuntimeSkillRoute {
 
 export interface AgentRuntimeOptions {
   agentDefinition?: AgentDefinition;
+  agentRegistry?: AgentRegistry;
   skillRuntime?: {
     route(request: Pick<AgentRequest, 'input'>): AgentRuntimeSkillRoute;
   };
@@ -42,6 +44,7 @@ export interface AgentRuntimeOptions {
 export class AgentRuntime {
   private readonly router: RequestRouter;
   private readonly agentDefinition: AgentDefinition;
+  private readonly agentRegistry?: AgentRegistry;
   private readonly skillRuntime?: AgentRuntimeOptions['skillRuntime'];
 
   constructor(
@@ -50,6 +53,7 @@ export class AgentRuntime {
     capabilities: AgentCapability[] = [],
     options: AgentRuntimeOptions = {},
   ) {
+    this.agentRegistry = options.agentRegistry;
     this.agentDefinition = options.agentDefinition ?? createDefaultAgentDefinition({
       model: llm.getModel(),
       deepModel: typeof llm.getDeepModel === 'function' ? llm.getDeepModel() : undefined,
@@ -78,25 +82,27 @@ export class AgentRuntime {
   }
 
   async handle(request: AgentRequest): Promise<AgentResponse> {
+    const agentDefinition = this.resolveAgentDefinition(request);
     const skillRoute = this.skillRuntime?.route(request);
     if (skillRoute?.kind === 'disabled_skill') {
       return annotateResponse(
         request,
         createDisabledSkillResponse(request, this.llm.getModel(), skillRoute.disabledSkillNames),
-        this.agentDefinition,
+        agentDefinition,
       );
     }
     if (skillRoute?.kind === 'skill') {
-      const response = await this.handleWithOrchestrator(request, skillRoute);
-      return annotateResponse(request, response, this.agentDefinition);
+      const response = await this.handleWithOrchestrator(request, agentDefinition, skillRoute);
+      return annotateResponse(request, response, agentDefinition);
     }
 
     const response = await this.router.handle(request);
-    return annotateResponse(request, response, this.agentDefinition);
+    return annotateResponse(request, response, agentDefinition);
   }
 
   private async handleWithOrchestrator(
     request: AgentRequest,
+    agentDefinition = this.resolveAgentDefinition(request),
     skillRoute?: AgentRuntimeSkillRoute,
   ): Promise<AgentResponse> {
     const trace = createTrace();
@@ -123,7 +129,7 @@ export class AgentRuntime {
 
     return {
       requestId: request.id,
-      agent: toAgentIdentity(this.agentDefinition),
+      agent: toAgentIdentity(agentDefinition),
       status: trace.status,
       text: reply,
       messages: [{ type: 'text', text: reply }],
@@ -133,6 +139,10 @@ export class AgentRuntime {
       modelMode: trace.modelMode,
       trace: toAgentTrace(trace),
     };
+  }
+
+  private resolveAgentDefinition(request: AgentRequest): AgentDefinition {
+    return this.agentRegistry?.resolveForChannel(request.channel.kind) ?? this.agentDefinition;
   }
 }
 

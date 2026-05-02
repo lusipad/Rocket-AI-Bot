@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AgentRuntime } from '../src/agent-core/runtime.ts';
 import { createDefaultAgentDefinition } from '../src/agent-core/definition.ts';
+import { AgentRegistry } from '../src/agent-core/registry.ts';
 import { CapabilityRegistry } from '../src/agent-core/capabilities.ts';
 import { createAzureDevOpsFileUrlCapability } from '../src/agent-core/capabilities/azure-devops-file-url.ts';
 import { createPublicRealtimeWebSearchCapability } from '../src/agent-core/capabilities/public-realtime-web-search.ts';
@@ -163,6 +164,77 @@ test('AgentRuntime 应支持注入自定义 AgentDefinition 并写入响应 trac
     name: 'DevOps Agent',
   });
   assert.equal(response.trace.agentId, 'devops-agent');
+});
+
+test('AgentRuntime 应按请求 channel 从 AgentRegistry 解析 AgentDefinition', async () => {
+  const registry = {
+    resolveForChannel(channel: string) {
+      return channel === 'scheduler'
+        ? {
+          id: 'scheduler-agent',
+          name: 'Scheduler Agent',
+          model: 'gpt-scheduler',
+          channels: ['scheduler'],
+          instructions: '处理定时任务。',
+          skillPolicy: { mode: 'enabled_project_skills' },
+          contextPolicyRef: 'default',
+        }
+        : {
+          id: 'chat-agent',
+          name: 'Chat Agent',
+          model: 'gpt-chat',
+          channels: ['rocketchat'],
+          instructions: '处理聊天。',
+          skillPolicy: { mode: 'enabled_project_skills' },
+          contextPolicyRef: 'default',
+        };
+    },
+  } as AgentRegistry;
+  const runtime = new AgentRuntime({
+    previewModelMode() {
+      return { mode: 'normal', model: 'gpt-5.5' };
+    },
+    async handle(
+      _userId: string,
+      _username: string,
+      _message: string,
+      _conversation: unknown[],
+      _images: string[],
+      _requestContext: unknown,
+      options: { trace?: OrchestratorTrace },
+    ) {
+      if (options.trace) {
+        options.trace.status = 'success';
+        options.trace.finishReason = 'reply';
+        options.trace.rounds = 1;
+      }
+      return 'ok';
+    },
+  } as never, {
+    getModel() {
+      return 'gpt-5.5';
+    },
+  } as never, [], {
+    agentRegistry: registry,
+  });
+
+  const chatResponse = await runtime.handle({
+    id: 'req-chat-agent',
+    input: '你好',
+    actor: { id: 'u1', username: 'alice', kind: 'human' },
+    channel: { kind: 'rocketchat' },
+  });
+  const schedulerResponse = await runtime.handle({
+    id: 'req-scheduler-agent',
+    input: '日报',
+    actor: { id: 'scheduler', username: 'scheduler', kind: 'system' },
+    channel: { kind: 'scheduler' },
+  });
+
+  assert.equal(chatResponse.agent?.id, 'chat-agent');
+  assert.equal(chatResponse.trace.agentId, 'chat-agent');
+  assert.equal(schedulerResponse.agent?.id, 'scheduler-agent');
+  assert.equal(schedulerResponse.trace.agentId, 'scheduler-agent');
 });
 
 test('AgentRuntime 应优先使用已注册 capability，再回退到 Orchestrator', async () => {

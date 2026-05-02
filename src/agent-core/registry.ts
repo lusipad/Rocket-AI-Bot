@@ -40,8 +40,10 @@ export class AgentRegistry {
     return { ...this.defaultAgent };
   }
 
-  resolveForChannel(_channel: AgentChannelKind): AgentDefinition {
-    return this.getDefault();
+  resolveForChannel(channel: AgentChannelKind): AgentDefinition {
+    return {
+      ...(this.agents.find((agent) => agent.channels.includes(channel)) ?? this.defaultAgent),
+    };
   }
 }
 
