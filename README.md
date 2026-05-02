@@ -164,6 +164,25 @@ Rocket.Chat 对 `/` 前缀有限制，推荐使用 `|` 前缀；`/` 前缀仍作
 
 这一层的目标是把模型、深度模型、渠道、skill 策略和上下文策略引用沉淀成通用 Agent 定义。管理端状态页和请求详情页会显示本次使用的 Agent，方便后续扩展为多 Agent、MCP tools 和更通用的 channel adapter。
 
+Agent 定义可以放在 `data/agents/*.json`。没有配置文件时会自动使用内置 `rocketbot-default`；当前 V1 只装载和展示定义，仍使用默认 Agent，不改变聊天入口行为。示例：
+
+```json
+{
+  "id": "devops-agent",
+  "name": "DevOps Agent",
+  "model": "gpt-5.5",
+  "deepModel": "gpt-5.5-pro",
+  "channels": ["rocketchat"],
+  "instructions": "只处理 DevOps 场景。",
+  "skillPolicy": {
+    "mode": "allowlist",
+    "allowedSkills": ["ado-lookup"]
+  },
+  "contextPolicyRef": "default",
+  "enabled": true
+}
+```
+
 ## 验证命令
 
 ```bash

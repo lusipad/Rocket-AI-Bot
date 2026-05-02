@@ -12,7 +12,7 @@ import { RequestLogStore } from '../src/observability/request-log-store.ts';
 import { DiscussionSummaryAdminService } from '../src/discussion/admin-service.ts';
 import { DiscussionSummaryStore } from '../src/discussion/summary-store.ts';
 import { ContextPolicyStore } from '../src/context/policy-store.ts';
-import { createDefaultAgentDefinition } from '../src/agent-core/definition.ts';
+import { AgentRegistry } from '../src/agent-core/registry.ts';
 
 function createLogger() {
   return {
@@ -175,9 +175,10 @@ async function withServer<T>(
     skillRegistry,
     requestLogStore,
     discussionAdminService,
-    agentDefinition: createDefaultAgentDefinition({
-      model: 'gpt-4',
-      deepModel: 'gpt-4-pro',
+    agentRegistry: new AgentRegistry({
+      rootDir: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rocketbot-web-agents-')), 'agents'),
+      defaultModel: 'gpt-4',
+      defaultDeepModel: 'gpt-4-pro',
     }),
     webSecret: 'secret-token',
   });
@@ -534,6 +535,10 @@ test('skills 接口应返回已装载列表并支持切换启用状态', async (
     assert.equal(statusResponse.status, 200);
 
     const status = await statusResponse.json();
+    assert.equal(status.agent.id, 'rocketbot-default');
+    assert.equal(status.agents.defaultId, 'rocketbot-default');
+    assert.equal(status.agents.total, 1);
+    assert.deepEqual(status.agents.items.map((agent: { id: string }) => agent.id), ['rocketbot-default']);
     assert.deepEqual(status.skills, {
       installed: 2,
       enabled: 1,

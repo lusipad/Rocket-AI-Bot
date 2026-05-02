@@ -57,6 +57,51 @@ export interface SkillDetail extends Skill {
   instructions: string;
 }
 
+export interface AgentStatus {
+  id: string;
+  name: string;
+  description?: string;
+  model: string;
+  deepModel?: string;
+  channels: string[];
+  skillPolicy: {
+    mode: 'enabled_project_skills' | 'allowlist';
+    allowedSkills?: string[];
+  };
+  contextPolicyRef: string;
+}
+
+export interface StatusResponse {
+  version: string;
+  uptime: number;
+  memory?: {
+    heapUsed?: string;
+    heapTotal?: string;
+  };
+  connections?: {
+    rocketchat?: string;
+    llm?: string;
+  };
+  model: string;
+  deepModel?: string;
+  apiMode?: string;
+  agent?: AgentStatus;
+  agents?: {
+    total: number;
+    defaultId: string;
+    items: AgentStatus[];
+  };
+  scheduler?: {
+    total: number;
+    active: number;
+  };
+  skills?: {
+    installed: number;
+    enabled: number;
+  };
+  requests?: RequestSummary;
+}
+
 export interface RequestLog {
   requestId: string;
   agentId?: string;
@@ -193,7 +238,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
-export async function getStatus(): Promise<any> {
+export async function getStatus(): Promise<StatusResponse> {
   return request('/status');
 }
 

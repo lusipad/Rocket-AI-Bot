@@ -7,6 +7,7 @@ import type { Logger } from '../../utils/logger.js';
 import type { RequestLogStore } from '../../observability/request-log-store.js';
 import type { DiscussionSummaryAdminService } from '../../discussion/admin-service.js';
 import type { AgentDefinition } from '../../agent-core/definition.js';
+import type { AgentRegistry } from '../../agent-core/registry.js';
 
 export function createStatusRoutes(
   llm: LLMClient,
@@ -15,7 +16,7 @@ export function createStatusRoutes(
   skillRegistry: SkillRegistry,
   requestLogStore: RequestLogStore,
   discussionAdminService: DiscussionSummaryAdminService,
-  agentDefinition: AgentDefinition,
+  agentRegistry: AgentRegistry,
   logger: Logger,
 ): Router {
   const router = Router();
@@ -23,6 +24,8 @@ export function createStatusRoutes(
   router.get('/', (_req, res) => {
     const tasks = scheduler.listTasks();
     const skills = skillRegistry.listInstalled();
+    const agentDefinition = agentRegistry.getDefault();
+    const agents = agentRegistry.list();
     res.json({
       version: '1.0.0',
       uptime: process.uptime(),
@@ -45,6 +48,11 @@ export function createStatusRoutes(
         channels: agentDefinition.channels,
         skillPolicy: agentDefinition.skillPolicy,
         contextPolicyRef: agentDefinition.contextPolicyRef,
+      },
+      agents: {
+        total: agents.length,
+        defaultId: agentDefinition.id,
+        items: agents.map(toAgentStatus),
       },
       scheduler: {
         total: tasks.length,
@@ -79,4 +87,17 @@ export function createStatusRoutes(
   });
 
   return router;
+}
+
+function toAgentStatus(agent: AgentDefinition) {
+  return {
+    id: agent.id,
+    name: agent.name,
+    description: agent.description,
+    model: agent.model,
+    deepModel: agent.deepModel,
+    channels: agent.channels,
+    skillPolicy: agent.skillPolicy,
+    contextPolicyRef: agent.contextPolicyRef,
+  };
 }

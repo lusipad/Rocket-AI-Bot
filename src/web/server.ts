@@ -7,7 +7,7 @@ import type { RocketChatClient } from '../bot/client.js';
 import type { SkillRegistry } from '../skills/registry.js';
 import type { RequestLogStore } from '../observability/request-log-store.js';
 import type { DiscussionSummaryAdminService } from '../discussion/admin-service.js';
-import type { AgentDefinition } from '../agent-core/definition.js';
+import type { AgentRegistry } from '../agent-core/registry.js';
 import { createTaskRoutes } from './api/tasks.js';
 import { createStatusRoutes } from './api/status.js';
 import { createSkillRoutes } from './api/skills.js';
@@ -24,7 +24,7 @@ export interface WebContext {
   skillRegistry: SkillRegistry;
   requestLogStore: RequestLogStore;
   discussionAdminService: DiscussionSummaryAdminService;
-  agentDefinition: AgentDefinition;
+  agentRegistry: AgentRegistry;
   webSecret?: string;
 }
 
@@ -72,7 +72,7 @@ export function createWebServer(ctx: WebContext): ReturnType<typeof express> {
     ctx.skillRegistry,
     ctx.requestLogStore,
     ctx.discussionAdminService,
-    ctx.agentDefinition,
+    ctx.agentRegistry,
     ctx.logger,
   ));
   app.use('/api/skills', createSkillRoutes(ctx.skillRegistry, ctx.logger));

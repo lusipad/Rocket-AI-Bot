@@ -15,7 +15,7 @@ import {
   type ModelModePreview,
 } from './agent/orchestrator.js';
 import { AgentRuntime, ProjectSkillCatalog, SkillRuntime, toRequestContext } from './agent-runtime/index.js';
-import { createDefaultAgentDefinition } from './agent-core/definition.js';
+import { AgentRegistry } from './agent-core/registry.js';
 import { createPublicRealtimeWebSearchCapability } from './agent-core/capabilities/public-realtime-web-search.js';
 import { createAzureDevOpsFileUrlCapability } from './agent-core/capabilities/azure-devops-file-url.js';
 import type { AgentConversationMessage, AgentResponse, AgentTrace } from './agent-core/types.js';
@@ -64,6 +64,7 @@ async function main() {
   ensureDir('data/memory');
   ensureDir('data/scheduler');
   ensureDir('data/scheduler/history');
+  ensureDir('data/agents');
 
   const processLock = acquireProcessLock(lockPath);
   if (!processLock.acquired) {
@@ -147,10 +148,11 @@ async function main() {
 
   // --- LLM + Orchestrator ---
   const llm = new LLMClient(config, logger);
-  const agentDefinition = createDefaultAgentDefinition({
-    model: llm.getModel(),
-    deepModel: llm.getDeepModel(),
+  const agentRegistry = new AgentRegistry({
+    defaultModel: llm.getModel(),
+    defaultDeepModel: llm.getDeepModel(),
   });
+  const agentDefinition = agentRegistry.resolveForChannel('rocketchat');
   const skillRegistry = new SkillRegistry(undefined, logger);
   const orchestrator = new Orchestrator(llm, registry, config, logger, skillRegistry);
   const skillRuntime = new SkillRuntime(new ProjectSkillCatalog(skillRegistry));
@@ -649,7 +651,7 @@ async function main() {
     skillRegistry,
     requestLogStore,
     discussionAdminService: discussionSummaryAdminService,
-    agentDefinition,
+    agentRegistry,
     webSecret: config.web.secret,
   });
 

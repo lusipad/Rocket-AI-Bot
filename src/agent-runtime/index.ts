@@ -2,6 +2,8 @@ export { AgentRuntime, toRequestContext } from '../agent-core/runtime.js';
 export type { AgentRuntimeOptions, AgentRuntimeSkillRoute } from '../agent-core/runtime.js';
 export { createDefaultAgentDefinition } from '../agent-core/definition.js';
 export type { AgentDefinition, AgentIdentity, AgentSkillPolicy } from '../agent-core/definition.js';
+export { AgentRegistry } from '../agent-core/registry.js';
+export type { AgentRegistryOptions } from '../agent-core/registry.js';
 export { CapabilityRegistry, RequestRouter } from '../agent-core/capabilities.js';
 export { classifyAgentInteraction, isAgentRequestType } from '../agent-core/classification.js';
 export type {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getDevToolsMetrics, getStatus, type DevToolsMetrics } from '../api/client';
+import { getDevToolsMetrics, getStatus, type AgentStatus, type DevToolsMetrics, type StatusResponse } from '../api/client';
 
 export default function Dashboard() {
-  const [status, setStatus] = useState<any>(null);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
   const [devTools, setDevTools] = useState<DevToolsMetrics | null>(null);
 
   useEffect(() => {
@@ -52,6 +52,37 @@ export default function Dashboard() {
       </div>
 
       <div className="card">
+        <h2>Agents</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>ID</th>
+              <th>模型</th>
+              <th>渠道</th>
+              <th>Skill 策略</th>
+              <th>上下文策略</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(status.agents?.items ?? []).map((agent) => (
+              <tr key={agent.id}>
+                <td>{agent.name}{agent.id === status.agents?.defaultId ? '（默认）' : ''}</td>
+                <td><code>{agent.id}</code></td>
+                <td>{agent.deepModel ? `${agent.model} / ${agent.deepModel}` : agent.model}</td>
+                <td>{agent.channels.join(', ')}</td>
+                <td>{formatSkillPolicy(agent.skillPolicy)}</td>
+                <td>{agent.contextPolicyRef}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p style={{color: '#666', marginTop: 12}}>
+          当前只读展示已装载 Agent。V1 仍使用默认 Agent，不改变 Rocket.Chat 聊天方式。
+        </p>
+      </div>
+
+      <div className="card">
         <h2>DevTools 工作流</h2>
         <table>
           <tbody>
@@ -70,6 +101,14 @@ export default function Dashboard() {
       </div>
     </div>
   );
+}
+
+function formatSkillPolicy(policy: AgentStatus['skillPolicy']): string {
+  if (policy.mode === 'allowlist') {
+    return `allowlist: ${policy.allowedSkills?.join(', ') || '-'}`;
+  }
+
+  return '已启用项目 Skills';
 }
 
 function formatRate(value: number | undefined): string {
